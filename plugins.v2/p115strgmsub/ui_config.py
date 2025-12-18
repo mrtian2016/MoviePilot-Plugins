@@ -4,17 +4,53 @@ UI配置模块
 """
 from typing import List, Dict, Any, Tuple
 from app.core.config import settings
+from app.db.subscribe_oper import SubscribeOper
+from app.schemas.types import MediaType
+from app.log import logger
 
 
 class UIConfig:
     """UI配置管理类"""
-    
+
+    @staticmethod
+    def get_subscribe_options() -> List[Dict[str, Any]]:
+        """
+        获取订阅选项列表（电影和电视剧）
+        :return: 订阅选项列表 [{"title": "显示名", "value": id}, ...]
+        """
+        try:
+            subscribes = SubscribeOper().list('R')
+            if not subscribes:
+                return []
+
+            options = []
+            for s in subscribes:
+                # 根据类型显示不同格式
+                type_label = "[剧]" if s.type == MediaType.TV.value else "[影]"
+                if s.type == MediaType.TV.value:
+                    # 电视剧显示季号
+                    display = f"{type_label} {s.name} ({s.year}) S{s.season or 1}" if s.year else f"{type_label} {s.name} S{s.season or 1}"
+                else:
+                    # 电影不显示季号
+                    display = f"{type_label} {s.name} ({s.year})" if s.year else f"{type_label} {s.name}"
+                options.append({
+                    "title": display,
+                    "value": s.id
+                })
+            return options
+        except Exception as e:
+            logger.error(f"获取订阅列表失败: {e}")
+            return []
+
     @staticmethod
     def get_form() -> Tuple[List[dict], Dict[str, Any]]:
         """
         获取插件配置表单
         :return: (表单schema, 默认配置)
         """
+        # 获取订阅选项
+        subscribe_options = UIConfig.get_subscribe_options()
+
         form_schema = [
             {
                 'component': 'VForm',
@@ -30,8 +66,8 @@ class UIConfig:
                                     'props': {
                                         'type': 'info',
                                         'variant': 'tonal',
-                                        'text': '本插件会自动获取 MoviePilot 中的电视剧订阅，搜索 115 网盘资源，' \
-                                                '并将缺失的剧集转存到您的 115 网盘中。需要配置 115 Cookie 和 PanSou 搜索服务。'
+                                        'text': '本插件会自动获取 MoviePilot 中的电影和电视剧订阅，搜索 115 网盘资源，' \
+                                                '并将缺失的电影和剧集转存到您的 115 网盘中。需要配置 115 Cookie 和 PanSou 搜索服务。'
                                     }
                                 }]
                             }
@@ -71,7 +107,7 @@ class UIConfig:
                         'content': [
                             {
                                 'component': 'VCol',
-                                'props': {'cols': 12, 'md': 6},
+                                'props': {'cols': 12, 'md': 4},
                                 'content': [{
                                     'component': 'VCronField',
                                     'props': {
@@ -83,10 +119,26 @@ class UIConfig:
                             },
                             {
                                 'component': 'VCol',
-                                'props': {'cols': 12, 'md': 6},
+                                'props': {'cols': 12, 'md': 4},
                                 'content': [{
                                     'component': 'VTextField',
-                                    'props': {'model': 'save_path', 'label': '115网盘转存目录'}
+                                    'props': {
+                                        'model': 'save_path',
+                                        'label': '电视剧转存目录',
+                                        'placeholder': '/我的接收/MoviePilot/TV'
+                                    }
+                                }]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 4},
+                                'content': [{
+                                    'component': 'VTextField',
+                                    'props': {
+                                        'model': 'movie_save_path',
+                                        'label': '电影转存目录',
+                                        'placeholder': '/我的接收/MoviePilot/Movie'
+                                    }
                                 }]
                             }
                         ]
@@ -116,11 +168,12 @@ class UIConfig:
                                 'component': 'VCol',
                                 'props': {'cols': 12},
                                 'content': [{
-                                    'component': 'VTextarea',
+                                    'component': 'VTextField',
                                     'props': {
                                         'model': 'cookies',
                                         'label': '115 Cookie',
-                                        'rows': 2,
+                                        'rows': 1,
+                                        'type': 'password',
                                         'placeholder': 'UID=xxx; CID=xxx; SEID=xxx; KID=xxx'
                                     }
                                 }]
@@ -151,14 +204,10 @@ class UIConfig:
                         'content': [
                             {
                                 'component': 'VCol',
-                                'props': {'cols': 12, 'md': 8},
+                                'props': {'cols': 12, 'md': 4},
                                 'content': [{
-                                    'component': 'VTextField',
-                                    'props': {
-                                        'model': 'pansou_url',
-                                        'label': 'PanSou API 地址',
-                                        'placeholder': 'https://your-pansou-api.com'
-                                    }
+                                    'component': 'VSwitch',
+                                    'props': {'model': 'pansou_enabled', 'label': '启用 PanSou 搜索'}
                                 }]
                             },
                             {
@@ -167,6 +216,18 @@ class UIConfig:
                                 'content': [{
                                     'component': 'VSwitch',
                                     'props': {'model': 'pansou_auth_enabled', 'label': '启用认证'}
+                                }]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 4},
+                                'content': [{
+                                    'component': 'VTextField',
+                                    'props': {
+                                        'model': 'pansou_url',
+                                        'label': 'PanSou API 地址',
+                                        'placeholder': 'https://your-pansou-api.com'
+                                    }
                                 }]
                             }
                         ]
@@ -217,24 +278,130 @@ class UIConfig:
                                 }]
                             }
                         ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12},
+                                'content': [{
+                                    'component': 'VAlert',
+                                    'props': {
+                                        'type': 'info',
+                                        'variant': 'tonal',
+                                        'title': 'Nullbr 资源查询配置',
+                                        'text': 'Nullbr 是基于 TMDB ID 的精准资源查询服务，可通过 TMDB ID 直接查询 115 网盘资源，准确度较高。需要配置 APP ID 和 API Key。'
+                                    }
+                                }]
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 3},
+                                'content': [{
+                                    'component': 'VSwitch',
+                                    'props': {
+                                        'model': 'nullbr_enabled',
+                                        'label': '启用 Nullbr'
+                                    }
+                                }]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 3},
+                                'content': [{
+                                    'component': 'VSwitch',
+                                    'props': {
+                                        'model': 'nullbr_priority',
+                                        'label': 'Nullbr 优先'
+                                    }
+                                }]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 6},
+                                'content': [{
+                                    'component': 'VTextField',
+                                    'props': {
+                                        'model': 'nullbr_api_key',
+                                        'label': 'Nullbr API Key',
+                                        'placeholder': '请输入 API Key',
+                                        'type': 'password'
+                                    }
+                                }]
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12},
+                                'content': [{
+                                    'component': 'VAlert',
+                                    'props': {
+                                        'type': 'info',
+                                        'variant': 'tonal',
+                                        'title': '订阅过滤配置',
+                                        'text': '选择不需要本插件处理的订阅，这些订阅将被跳过。'
+                                    }
+                                }]
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12},
+                                'content': [{
+                                    'component': 'VSelect',
+                                    'props': {
+                                        'model': 'exclude_subscribes',
+                                        'label': '排除订阅',
+                                        'multiple': True,
+                                        'chips': True,
+                                        'clearable': True,
+                                        'closable-chips': True,
+                                        'hint': '选择不需要处理的订阅（电影或电视剧）',
+                                        'persistent-hint': True,
+                                        'items': subscribe_options
+                                    }
+                                }]
+                            }
+                        ]
                     }
                 ]
             }
         ]
-        
+
         default_config = {
             "enabled": False,
             "notify": True,
             "onlyonce": False,
             "only_115": True,
             "cron": "30 * * * *",
-            "save_path": "/我的接收/MoviePilot",
+            "save_path": "/我的接收/MoviePilot/TV",
+            "movie_save_path": "/我的接收/MoviePilot/Movie",
             "cookies": "",
+            "pansou_enabled": True,
             "pansou_url": "https://so.252035.xyz/",
             "pansou_username": "",
             "pansou_password": "",
             "pansou_auth_enabled": False,
-            "pansou_channels": "QukanMovie"
+            "pansou_channels": "QukanMovie",
+            "nullbr_enabled": False,
+            "nullbr_app_id": "",
+            "nullbr_api_key": "",
+            "nullbr_priority": True,
+            "exclude_subscribes": []
         }
         
         return form_schema, default_config
