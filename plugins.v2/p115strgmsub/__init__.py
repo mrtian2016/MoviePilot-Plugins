@@ -45,7 +45,7 @@ class P115StrgmSub(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
     # 插件版本
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     # 插件作者
     plugin_author = "mrtian2016"
     # 作者主页
@@ -69,7 +69,7 @@ class P115StrgmSub(_PluginBase):
     _pansou_url: str = "https://so.252035.xyz"
     _pansou_username: str = ""
     _pansou_password: str = ""
-    _pansou_auth_enabled: bool = True
+    _pansou_auth_enabled: bool = False
     _pansou_channels: str = "QukanMovie"  # TG搜索频道列表,用逗号分隔
     _save_path: str = "/我的接收/MoviePilot"
     _only_115: bool = True  # 只搜索115网盘资源
@@ -92,7 +92,7 @@ class P115StrgmSub(_PluginBase):
             self._pansou_url = config.get("pansou_url", "https://so.252035.xyz/")
             self._pansou_username = config.get("pansou_username", "")
             self._pansou_password = config.get("pansou_password", "")
-            self._pansou_auth_enabled = config.get("pansou_auth_enabled", True)
+            self._pansou_auth_enabled = config.get("pansou_auth_enabled", False)
             self._pansou_channels = config.get("pansou_channels", "QukanMovie")
             self._save_path = config.get("save_path", "/我的接收/MoviePilot")
             self._only_115 = config.get("only_115", True)

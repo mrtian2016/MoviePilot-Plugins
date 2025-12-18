@@ -227,14 +227,14 @@ class UIConfig:
             "notify": True,
             "onlyonce": False,
             "only_115": True,
-            "cron": "",
+            "cron": "30 * * * *",
             "save_path": "/我的接收/MoviePilot",
             "cookies": "",
-            "pansou_url": "",
+            "pansou_url": "https://so.252035.xyz/",
             "pansou_username": "",
             "pansou_password": "",
-            "pansou_auth_enabled": True,
-            "pansou_channels": ""
+            "pansou_auth_enabled": False,
+            "pansou_channels": "QukanMovie"
         }
         
         return form_schema, default_config
