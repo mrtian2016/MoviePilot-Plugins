@@ -286,7 +286,7 @@ class UIConfig:
                             'content': [
                                 {'component': 'VIcon', 'props': {'color': status_color, 'size': 'small', 'class': 'mr-2'}, 'text': status_icon},
                                 {'component': 'span', 'props': {'class': 'font-weight-bold'}, 
-                                 'text': f'{h.get("title", "")} S{h.get("season", 0):02d}E{h.get("episode", 0):02d}'}
+                                 'text': f'{h.get("title", "")} ({h.get("year", "")})' if h.get("type") == "电影" else f'{h.get("title", "")} S{h.get("season", 0):02d}E{h.get("episode", 0):02d}'}
                             ]
                         },
                         {'component': 'VChip', 'props': {'color': status_color, 'size': 'x-small', 'variant': 'flat'}, 'text': status}

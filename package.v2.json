@@ -3,11 +3,12 @@
     "name": "115网盘订阅追更",
     "description": "结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集。",
     "labels": "订阅,115网盘",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
     "author": "mrtian2016",
     "level": 1,
     "history": {
+      "v1.0.7": "1. 优化面板页面电影名称的显示。",
       "v1.0.6": "1. 新增分享链接有效性预检查，跳过已过期/取消/删除的链接；2. 新增剧集匹配诊断统计，无匹配时输出详细原因；3. 日志级别优化，关键信息改为 info 级别便于排查",
       "v1.0.5": "1. 新增屏蔽系统订阅功能，支持阻止 MoviePilot 默认订阅处理；2. 优化洗版模式逻辑，待升级集数不再被跳过；3. 简化电视剧搜索关键词策略；4. 大幅精简 UI 配置代码；5. 添加 Nullbr 请求头 User-Agent 标识",
       "v1.0.4": "1. 修复 API 接口错误",
