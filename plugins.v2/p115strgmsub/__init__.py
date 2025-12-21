@@ -77,7 +77,7 @@ class P115StrgmSub(_PluginBase):
     _only_115: bool = True  # 只搜索115网盘资源
     _exclude_subscribes: List[int] = []  # 排除的订阅ID列表
     _nullbr_enabled: bool = False  # 是否启用 Nullbr 查询
-    _nullbr_app_id: str = ""  # Nullbr APP ID
+    _nullbr_appid: str = ""  # Nullbr APP ID（新字段名，避免加载旧配置）
     _nullbr_api_key: str = ""  # Nullbr API Key
     _nullbr_priority: bool = True  # Nullbr 优先（True: 优先使用 Nullbr，False: 优先使用 PanSou）
     _block_system_subscribe: bool = False  # 是否屏蔽系统订阅
@@ -109,7 +109,7 @@ class P115StrgmSub(_PluginBase):
             self._only_115 = config.get("only_115", True)
             self._exclude_subscribes = config.get("exclude_subscribes", []) or []
             self._nullbr_enabled = config.get("nullbr_enabled", False)
-            self._nullbr_app_id = config.get("nullbr_app_id", "")
+            self._nullbr_appid = config.get("nullbr_appid", "")
             self._nullbr_api_key = config.get("nullbr_api_key", "")
             self._nullbr_priority = config.get("nullbr_priority", True)
             
@@ -159,16 +159,16 @@ class P115StrgmSub(_PluginBase):
 
         # 初始化 Nullbr 客户端
         if self._nullbr_enabled:
-            if not self._nullbr_app_id or not self._nullbr_api_key:
+            if not self._nullbr_appid or not self._nullbr_api_key:
                 missing = []
-                if not self._nullbr_app_id:
+                if not self._nullbr_appid:
                     missing.append("APP ID")
                 if not self._nullbr_api_key:
                     missing.append("API Key")
                 logger.warning(f"⚠️ Nullbr 已启用但缺少必要配置：{', '.join(missing)}，将无法使用 Nullbr 查询功能")
                 self._nullbr_client = None
             else:
-                self._nullbr_client = NullbrClient(app_id=self._nullbr_app_id, api_key=self._nullbr_api_key)
+                self._nullbr_client = NullbrClient(app_id=self._nullbr_appid, api_key=self._nullbr_api_key)
                 logger.info("✓ Nullbr 客户端初始化成功")
 
     def get_state(self) -> bool:
@@ -267,7 +267,7 @@ class P115StrgmSub(_PluginBase):
             "pansou_auth_enabled": self._pansou_auth_enabled,
             "pansou_channels": self._pansou_channels,
             "nullbr_enabled": self._nullbr_enabled,
-            "nullbr_app_id": self._nullbr_app_id,
+            "nullbr_appid": self._nullbr_appid,
             "nullbr_api_key": self._nullbr_api_key,
             "nullbr_priority": self._nullbr_priority,
             "exclude_subscribes": self._exclude_subscribes,
