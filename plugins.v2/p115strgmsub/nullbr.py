@@ -38,7 +38,12 @@ class NullbrClient:
         :return: 资源列表
         """
         if not self.api_key or not self.app_id:
-            logger.warning("Nullbr APP ID 或 API Key 未配置")
+            missing = []
+            if not self.app_id:
+                missing.append("APP ID")
+            if not self.api_key:
+                missing.append("API Key")
+            logger.error(f"❌ Nullbr 缺少必要配置：{', '.join(missing)}，请在插件设置中配置")
             return []
 
         try:
@@ -86,7 +91,12 @@ class NullbrClient:
         :return: 资源列表
         """
         if not self.api_key or not self.app_id:
-            logger.warning("Nullbr APP ID 或 API Key 未配置")
+            missing = []
+            if not self.app_id:
+                missing.append("APP ID")
+            if not self.api_key:
+                missing.append("API Key")
+            logger.error(f"❌ Nullbr 缺少必要配置：{', '.join(missing)}，请在插件设置中配置")
             return []
 
         try:
@@ -144,6 +154,12 @@ class NullbrClient:
         :return: 是否连接成功
         """
         if not self.api_key or not self.app_id:
+            missing = []
+            if not self.app_id:
+                missing.append("APP ID")
+            if not self.api_key:
+                missing.append("API Key")
+            logger.warning(f"⚠️ Nullbr 连接检查失败：缺少{', '.join(missing)}")
             return False
 
         try:
