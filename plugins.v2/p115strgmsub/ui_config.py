@@ -137,7 +137,7 @@ class UIConfig:
                         'content': [
                             {'component': 'VCol', 'props': {'cols': 6, 'md': 3}, 'content': [{'component': 'VSwitch', 'props': {'model': 'nullbr_enabled', 'label': '启用 Nullbr'}}]},
                             {'component': 'VCol', 'props': {'cols': 6, 'md': 3}, 'content': [{'component': 'VSwitch', 'props': {'model': 'nullbr_priority', 'label': 'Nullbr 优先'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VTextField', 'props': {'model': 'nullbr_app_id', 'label': 'Nullbr APP ID', 'placeholder': '请输入 APP ID'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VTextField', 'props': {'model': 'nullbr_appid', 'label': 'Nullbr APP ID', 'placeholder': '请输入 APP ID'}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VTextField', 'props': {'model': 'nullbr_api_key', 'label': 'Nullbr API Key', 'type': 'password', 'placeholder': '请输入 API Key'}}]}
                         ]
                     },
@@ -170,7 +170,7 @@ class UIConfig:
             "pansou_auth_enabled": False,
             "pansou_channels": "QukanMovie",
             "nullbr_enabled": False,
-            "nullbr_app_id": "",
+            "nullbr_appid": "",
             "nullbr_api_key": "",
             "nullbr_priority": True,
             "exclude_subscribes": [],
