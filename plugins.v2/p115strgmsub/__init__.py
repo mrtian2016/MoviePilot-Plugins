@@ -31,7 +31,7 @@ from app.utils.string import StringUtils
 from .pansou import PanSouClient
 from .p115client import P115ClientManager
 from .nullbr import NullbrClient
-from .hdhive import create_client as create_hdhive_client, MediaType as HDHiveMediaType
+from .lib.hdhive import create_client as create_hdhive_client, MediaType as HDHiveMediaType
 from .ui_config import UIConfig
 from .file_matcher import FileMatcher, SubscribeFilter
 
