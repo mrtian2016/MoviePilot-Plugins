@@ -237,68 +237,170 @@ class UIConfig:
         :param history: 历史记录列表
         :return: 页面schema
         """
+        from datetime import datetime
+        
         # 统计信息
         total_count = len(history)
         success_count = len([h for h in history if h.get("status") == "成功"])
         fail_count = len([h for h in history if h.get("status") == "失败"])
+        movie_count = len([h for h in history if h.get("type") == "电影"])
+        tv_count = len([h for h in history if h.get("type") != "电影"])
         
-        # 头部统计卡片
-        header = {
+        # 计算今日转存数
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_count = len([h for h in history if h.get("time", "").startswith(today)])
+        
+        # 计算成功率
+        success_rate = f"{(success_count / total_count * 100):.1f}%" if total_count > 0 else "0%"
+        
+        # 最近一次转存时间
+        sorted_history = sorted(history, key=lambda x: x.get('time', ''), reverse=True) if history else []
+        logger.info(f"sorted_history: {sorted_history}")
+        last_sync_time = sorted_history[0].get("time", "暂无") if sorted_history else "暂无"
+        
+        # 头部统计卡片 - 主要统计
+        stats_header = {
             'component': 'VCard',
             'props': {'class': 'mb-4'},
             'content': [{
                 'component': 'VCardText',
                 'content': [
+                    # 第一行：核心统计数据
                     {
                         'component': 'VRow',
                         'content': [
+                            # 总转存
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 6, 'md': 3},
+                                'content': [{
+                                    'component': 'VCard',
+                                    'props': {'variant': 'tonal', 'color': 'primary'},
+                                    'content': [{
+                                        'component': 'VCardText',
+                                        'props': {'class': 'text-center pa-3'},
+                                        'content': [
+                                            {'component': 'VIcon', 'props': {'size': 'x-large', 'class': 'mb-2'}, 'text': 'mdi-cloud-upload'},
+                                            {'component': 'div', 'props': {'class': 'text-h4 font-weight-bold'}, 'text': str(total_count)},
+                                            {'component': 'div', 'props': {'class': 'text-caption'}, 'text': '总转存数'}
+                                        ]
+                                    }]
+                                }]
+                            },
+                            # 今日转存
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 6, 'md': 3},
+                                'content': [{
+                                    'component': 'VCard',
+                                    'props': {'variant': 'tonal', 'color': 'info'},
+                                    'content': [{
+                                        'component': 'VCardText',
+                                        'props': {'class': 'text-center pa-3'},
+                                        'content': [
+                                            {'component': 'VIcon', 'props': {'size': 'x-large', 'class': 'mb-2'}, 'text': 'mdi-calendar-today'},
+                                            {'component': 'div', 'props': {'class': 'text-h4 font-weight-bold'}, 'text': str(today_count)},
+                                            {'component': 'div', 'props': {'class': 'text-caption'}, 'text': '今日转存'}
+                                        ]
+                                    }]
+                                }]
+                            },
+                            # 成功数
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 6, 'md': 3},
+                                'content': [{
+                                    'component': 'VCard',
+                                    'props': {'variant': 'tonal', 'color': 'success'},
+                                    'content': [{
+                                        'component': 'VCardText',
+                                        'props': {'class': 'text-center pa-3'},
+                                        'content': [
+                                            {'component': 'VIcon', 'props': {'size': 'x-large', 'class': 'mb-2'}, 'text': 'mdi-check-circle'},
+                                            {'component': 'div', 'props': {'class': 'text-h4 font-weight-bold'}, 'text': str(success_count)},
+                                            {'component': 'div', 'props': {'class': 'text-caption'}, 'text': f'成功 ({success_rate})'}
+                                        ]
+                                    }]
+                                }]
+                            },
+                            # 失败数
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 6, 'md': 3},
+                                'content': [{
+                                    'component': 'VCard',
+                                    'props': {'variant': 'tonal', 'color': 'error'},
+                                    'content': [{
+                                        'component': 'VCardText',
+                                        'props': {'class': 'text-center pa-3'},
+                                        'content': [
+                                            {'component': 'VIcon', 'props': {'size': 'x-large', 'class': 'mb-2'}, 'text': 'mdi-close-circle'},
+                                            {'component': 'div', 'props': {'class': 'text-h4 font-weight-bold'}, 'text': str(fail_count)},
+                                            {'component': 'div', 'props': {'class': 'text-caption'}, 'text': '失败'}
+                                        ]
+                                    }]
+                                }]
+                            }
+                        ]
+                    },
+                    # 第二行：媒体类型统计和最近同步时间
+                    {
+                        'component': 'VRow',
+                        'props': {'class': 'mt-4'},
+                        'content': [
+                            # 电影数
                             {
                                 'component': 'VCol',
                                 'props': {'cols': 4},
                                 'content': [{
                                     'component': 'div',
-                                    'props': {'class': 'text-center'},
+                                    'props': {'class': 'd-flex align-center justify-center'},
                                     'content': [
-                                        {'component': 'div', 'props': {'class': 'text-h5 font-weight-bold'}, 'text': str(total_count)},
-                                        {'component': 'div', 'props': {'class': 'text-caption'}, 'text': '总记录'}
+                                        {'component': 'VIcon', 'props': {'color': 'amber', 'class': 'mr-2'}, 'text': 'mdi-movie'},
+                                        {'component': 'span', 'props': {'class': 'text-h6 font-weight-medium'}, 'text': str(movie_count)},
+                                        {'component': 'span', 'props': {'class': 'text-caption ml-1'}, 'text': '部电影'}
                                     ]
                                 }]
                             },
+                            # 电视剧数
                             {
                                 'component': 'VCol',
                                 'props': {'cols': 4},
                                 'content': [{
                                     'component': 'div',
-                                    'props': {'class': 'text-center'},
+                                    'props': {'class': 'd-flex align-center justify-center'},
                                     'content': [
-                                        {'component': 'div', 'props': {'class': 'text-h5 font-weight-bold text-success'}, 'text': str(success_count)},
-                                        {'component': 'div', 'props': {'class': 'text-caption'}, 'text': '成功'}
+                                        {'component': 'VIcon', 'props': {'color': 'purple', 'class': 'mr-2'}, 'text': 'mdi-television-classic'},
+                                        {'component': 'span', 'props': {'class': 'text-h6 font-weight-medium'}, 'text': str(tv_count)},
+                                        {'component': 'span', 'props': {'class': 'text-caption ml-1'}, 'text': '集剧集'}
                                     ]
                                 }]
                             },
+                            # 最近同步
                             {
                                 'component': 'VCol',
                                 'props': {'cols': 4},
                                 'content': [{
                                     'component': 'div',
-                                    'props': {'class': 'text-center'},
+                                    'props': {'class': 'd-flex align-center justify-center'},
                                     'content': [
-                                        {'component': 'div', 'props': {'class': 'text-h5 font-weight-bold text-error'}, 'text': str(fail_count)},
-                                        {'component': 'div', 'props': {'class': 'text-caption'}, 'text': '失败'}
+                                        {'component': 'VIcon', 'props': {'color': 'cyan', 'class': 'mr-2'}, 'text': 'mdi-clock-outline'},
+                                        {'component': 'span', 'props': {'class': 'text-caption'}, 'text': f'最近同步: {last_sync_time[:16] if len(last_sync_time) > 16 else last_sync_time}'}
                                     ]
                                 }]
                             }
                         ]
                     },
+                    # 操作按钮
                     {
                         'component': 'VRow',
-                        'props': {'class': 'mt-2'},
+                        'props': {'class': 'mt-4'},
                         'content': [{
                             'component': 'VCol',
                             'props': {'cols': 12, 'class': 'text-center'},
                             'content': [{
                                 'component': 'VBtn',
-                                'props': {'color': 'error', 'variant': 'outlined', 'size': 'small', 'prepend-icon': 'mdi-delete'},
+                                'props': {'color': 'error', 'variant': 'outlined', 'size': 'small', 'prepend-icon': 'mdi-delete-sweep'},
                                 'text': '清空历史记录',
                                 'events': {
                                     'click': {
@@ -313,21 +415,50 @@ class UIConfig:
             }]
         }
         
-        if not history:
-            return [header, {'component': 'div', 'text': '暂无转存记录', 'props': {'class': 'text-center text-grey mt-4'}}]
+        if not sorted_history:
+            empty_state = {
+                'component': 'VCard',
+                'props': {'variant': 'outlined', 'class': 'mt-4'},
+                'content': [{
+                    'component': 'VCardText',
+                    'props': {'class': 'text-center py-8'},
+                    'content': [
+                        {'component': 'VIcon', 'props': {'size': '64', 'color': 'grey-lighten-1', 'class': 'mb-4'}, 'text': 'mdi-inbox-outline'},
+                        {'component': 'div', 'props': {'class': 'text-h6 text-grey'}, 'text': '暂无转存记录'},
+                        {'component': 'div', 'props': {'class': 'text-caption text-grey-lighten-1 mt-2'}, 'text': '插件运行后会在此显示转存记录'}
+                    ]
+                }]
+            }
+            return [stats_header, empty_state]
         
-        # 数据按时间降序排序
-        history = sorted(history, key=lambda x: x.get('time', ''), reverse=True)
+        # 分离电影和剧集历史
+        movie_history = [h for h in sorted_history if h.get("type") == "电影"][:50]
+        tv_history = [h for h in sorted_history if h.get("type") != "电影"][:50]
+        all_history = sorted_history[:50]
         
-        # 拼装历史记录列表
-        contents = []
-        for h in history[:50]:  # 只显示最近50条
+        # 构建单个历史记录卡片的辅助函数
+        def build_history_item(h: dict) -> dict:
             status = h.get("status", "")
+            media_type = h.get("type", "")
             status_color = "success" if status == "成功" else "error" if status == "失败" else "warning"
             status_icon = "mdi-check-circle" if status == "成功" else "mdi-close-circle" if status == "失败" else "mdi-help-circle"
             
+            # 媒体类型图标和颜色
+            type_icon = "mdi-movie" if media_type == "电影" else "mdi-television-classic"
+            type_color = "amber" if media_type == "电影" else "purple"
+            
             file_name = h.get("file_name", "")
+            
+            # 构建标题文本
+            if media_type == "电影":
+                title_text = f'{h.get("title", "")} ({h.get("year", "")})'
+            else:
+                season = h.get("season", 0) or 0
+                episode = h.get("episode", 0) or 0
+                title_text = f'{h.get("title", "")} S{season:02d}E{episode:02d}'
+            
             content_items = [
+                # 第一行：媒体类型图标 + 标题 + 状态标签
                 {
                     'component': 'div',
                     'props': {'class': 'd-flex justify-space-between align-center'},
@@ -336,30 +467,104 @@ class UIConfig:
                             'component': 'div',
                             'props': {'class': 'd-flex align-center'},
                             'content': [
-                                {'component': 'VIcon', 'props': {'color': status_color, 'size': 'small', 'class': 'mr-2'}, 'text': status_icon},
-                                {'component': 'span', 'props': {'class': 'font-weight-bold'}, 
-                                 'text': f'{h.get("title", "")} ({h.get("year", "")})' if h.get("type") == "电影" else f'{h.get("title", "")} S{h.get("season", 0):02d}E{h.get("episode", 0):02d}'}
+                                {'component': 'VIcon', 'props': {'color': type_color, 'size': 'small', 'class': 'mr-2'}, 'text': type_icon},
+                                {'component': 'span', 'props': {'class': 'font-weight-bold'}, 'text': title_text}
                             ]
                         },
-                        {'component': 'VChip', 'props': {'color': status_color, 'size': 'x-small', 'variant': 'flat'}, 'text': status}
+                        {
+                            'component': 'div',
+                            'props': {'class': 'd-flex align-center'},
+                            'content': [
+                                {'component': 'VIcon', 'props': {'color': status_color, 'size': 'x-small', 'class': 'mr-1'}, 'text': status_icon},
+                                {'component': 'VChip', 'props': {'color': status_color, 'size': 'x-small', 'variant': 'flat'}, 'text': status}
+                            ]
+                        }
                     ]
                 },
-                {'component': 'div', 'props': {'class': 'text-caption text-grey mt-1'}, 'text': h.get("time", "")}
+                # 第二行：时间信息
+                {
+                    'component': 'div',
+                    'props': {'class': 'd-flex align-center mt-1'},
+                    'content': [
+                        {'component': 'VIcon', 'props': {'size': 'x-small', 'color': 'grey', 'class': 'mr-1'}, 'text': 'mdi-clock-outline'},
+                        {'component': 'span', 'props': {'class': 'text-caption text-grey'}, 'text': h.get("time", "")}
+                    ]
+                }
             ]
             
+            # 如果有文件名，显示文件信息
             if file_name:
-                content_items.append(
-                    {'component': 'div', 'props': {'class': 'text-caption text-grey text-truncate'}, 'text': f'文件:{file_name}'}
-                )
+                content_items.append({
+                    'component': 'div',
+                    'props': {'class': 'd-flex align-center mt-1'},
+                    'content': [
+                        {'component': 'VIcon', 'props': {'size': 'x-small', 'color': 'grey', 'class': 'mr-1'}, 'text': 'mdi-file-video'},
+                        {'component': 'span', 'props': {'class': 'text-caption text-grey text-truncate', 'style': 'max-width: 400px;'}, 'text': file_name}
+                    ]
+                })
             
-            contents.append({
+            # 使用不同的边框颜色来区分状态
+            border_style = f'border-left: 3px solid var(--v-theme-{status_color}) !important;'
+            
+            return {
                 'component': 'VCard',
-                'props': {'class': 'mb-2', 'variant': 'outlined'},
-                'content': [{'component': 'VCardText', 'props': {'class': 'py-2'}, 'content': content_items}]
-            })
+                'props': {'class': 'mb-2', 'variant': 'outlined', 'style': border_style},
+                'content': [{'component': 'VCardText', 'props': {'class': 'py-2 px-3'}, 'content': content_items}]
+            }
         
-        return [
-            header,
-            {'component': 'div', 'props': {'class': 'text-subtitle-2 mb-2'}, 'text': f'最近 {min(len(history), 50)} 条记录'},
-            {'component': 'div', 'content': contents}
-        ]
+        # 构建带空状态的历史列表
+        def build_history_list(items: List[dict], empty_text: str) -> List[dict]:
+            if not items:
+                return [{
+                    'component': 'div',
+                    'props': {'class': 'text-center py-8'},
+                    'content': [
+                        {'component': 'VIcon', 'props': {'size': '48', 'color': 'grey-lighten-1', 'class': 'mb-2'}, 'text': 'mdi-inbox-outline'},
+                        {'component': 'div', 'props': {'class': 'text-grey'}, 'text': empty_text}
+                    ]
+                }]
+            return [build_history_item(h) for h in items]
+        
+        # 使用折叠面板分类显示
+        expansion_panels = {
+            'component': 'VExpansionPanels',
+            'props': {'variant': 'accordion', 'class': 'mt-4'},
+            'content': [
+                # 电影分类
+                {
+                    'component': 'VExpansionPanel',
+                    'content': [
+                        {
+                            'component': 'VExpansionPanelTitle',
+                            'content': [
+                                {'component': 'VIcon', 'props': {'color': 'amber', 'class': 'mr-3'}, 'text': 'mdi-movie'},
+                                {'component': 'span', 'props': {'class': 'font-weight-bold'}, 'text': f'电影 ({len(movie_history)})'}
+                            ]
+                        },
+                        {
+                            'component': 'VExpansionPanelText',
+                            'content': build_history_list(movie_history, '暂无电影转存记录')
+                        }
+                    ]
+                },
+                # 剧集分类
+                {
+                    'component': 'VExpansionPanel',
+                    'content': [
+                        {
+                            'component': 'VExpansionPanelTitle',
+                            'content': [
+                                {'component': 'VIcon', 'props': {'color': 'purple', 'class': 'mr-3'}, 'text': 'mdi-television-classic'},
+                                {'component': 'span', 'props': {'class': 'font-weight-bold'}, 'text': f'剧集 ({len(tv_history)})'}
+                            ]
+                        },
+                        {
+                            'component': 'VExpansionPanelText',
+                            'content': build_history_list(tv_history, '暂无剧集转存记录')
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        return [stats_header, expansion_panels]

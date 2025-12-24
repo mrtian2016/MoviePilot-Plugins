@@ -1548,6 +1548,7 @@ class P115StrgmSub(_PluginBase):
                                     "title": mediainfo.title,
                                     "season": season,
                                     "episode": episode,
+                                    "type": "电视剧",
                                     "status": "成功" if success else "失败",
                                     "share_url": share_url,
                                     "file_name": file_name,
