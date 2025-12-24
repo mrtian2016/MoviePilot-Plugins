@@ -430,9 +430,9 @@ class FileMatcher:
             logger.info(f"检查网盘目录 {save_dir}，共 {len(files)} 个文件")
 
             # DEBUG: 打印前3个文件的完整结构
-            if files:
-                for i, f in enumerate(files[:3]):
-                    logger.info(f"[DEBUG] 文件样本 {i+1}: {f}")
+            # if files:
+            #     for i, f in enumerate(files[:3]):
+            #         logger.info(f"[DEBUG] 文件样本 {i+1}: {f}")
 
             # 使用MetaInfo识别每个文件的集数
             for file_info in files:
@@ -444,7 +444,7 @@ class FileMatcher:
                 is_dir = (fid == 0 or fid == "0")
                 
                 # DEBUG: 显示每个文件的 fid 和判断结果
-                logger.info(f"文件: {file_name}, fid={fid}, is_dir={is_dir}")
+                # logger.info(f"文件: {file_name}, fid={fid}, is_dir={is_dir}")
 
                 # 跳过目录
                 if is_dir:
