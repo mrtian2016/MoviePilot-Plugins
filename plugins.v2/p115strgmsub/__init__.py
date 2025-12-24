@@ -508,10 +508,9 @@ class P115StrgmSub(_PluginBase):
             import os
             from .lib.hdhive import create_async_client as create_hdhive_async_client
             
-            proxy_host = os.environ.get("PROXY_HOST")
-            proxy = {"http": proxy_host, "https": proxy_host} if proxy_host else None
+            proxy = settings.PROXY
             
-            logger.info(f"使用 HDHive (Playwright) 查询: {mediainfo.title} (TMDB ID: {mediainfo.tmdb_id})")
+            logger.info(f"使用 HDHive (Playwright) 查询: {mediainfo.title} (TMDB ID: {mediainfo.tmdb_id})，代理：{proxy}")
             
             async def async_search():
                 async with create_hdhive_async_client(
