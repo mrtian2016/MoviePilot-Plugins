@@ -346,7 +346,17 @@ class SyncHandler:
 
             if exist_flag:
                 logger.info(f"{mediainfo.title_year} S{meta.begin_season} 媒体库中已完整存在")
-                if subscribe.lack_episode != 0:
+                # 媒体库已完整，调用完成订阅逻辑
+                total_ep = subscribe.total_episode or 0
+                start_ep = subscribe.start_episode or 1
+                if total_ep > 0:
+                    all_episodes = list(range(start_ep, total_ep + 1))
+                    self._subscribe_handler.check_and_finish_subscribe(
+                        subscribe=subscribe,
+                        mediainfo=mediainfo,
+                        success_episodes=all_episodes
+                    )
+                elif subscribe.lack_episode != 0:
                     SubscribeOper().update(subscribe.id, {"lack_episode": 0})
                 return transferred_count
 
@@ -424,7 +434,14 @@ class SyncHandler:
                 )
 
             if not missing_episodes:
-                logger.info(f"{mediainfo.title_year} S{season} 所有缺失剧集已转存")
+                logger.info(f"{mediainfo.title_year} S{season} 所有缺失剧集已存在于网盘")
+                # 网盘中已存在所有缺失集数，更新订阅状态
+                if existing_episodes_in_cloud:
+                    self._subscribe_handler.check_and_finish_subscribe(
+                        subscribe=subscribe,
+                        mediainfo=mediainfo,
+                        success_episodes=list(existing_episodes_in_cloud)
+                    )
                 return transferred_count
 
             logger.info(f"{mediainfo.title_year} S{season} 待转存剧集：{missing_episodes}")
@@ -676,11 +693,13 @@ class SyncHandler:
                         logger.info(f"[{source.upper()}] 处理完成，仍有 {len(missing_episodes)} 集缺失，已无更多可用源")
 
             # 更新订阅状态
-            if success_episodes:
+            # 将网盘已存在的集数和本次成功转存的集数合并
+            all_success_episodes = list(set(success_episodes) | existing_episodes_in_cloud)
+            if all_success_episodes:
                 self._subscribe_handler.check_and_finish_subscribe(
                     subscribe=subscribe,
                     mediainfo=mediainfo,
-                    success_episodes=success_episodes
+                    success_episodes=all_success_episodes
                 )
 
         except Exception as e:

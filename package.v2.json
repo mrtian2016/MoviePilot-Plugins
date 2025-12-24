@@ -4,11 +4,12 @@
     "release": true,
     "description": "结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集。",
     "labels": "订阅,115网盘",
-    "version": "1.1.4",
+    "version": "1.1.5",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
     "author": "mrtian2016",
     "level": 1,
     "history": {
+      "v1.1.5": "1. 修复网盘已存在剧集检测失败的问题（115 API 字段名兼容）；2. 修复订阅状态更新逻辑：网盘已存在的集数现在会正确记录到订阅中；3. 优化订阅完成判断：当网盘已有全部剧集时自动完成订阅。",
       "v1.1.4": "1. 统计页面新增「立即搜索」按钮，支持一键触发同步；2. 优化 UI 布局细节",
       "v1.1.3": "1. 移除 Nullbr 优先开关，固定搜索优先级为 Nullbr > HDHive > PanSou；2. 新增电视剧智能回退搜索：当前源未找全缺失集数时自动继续查询下一个源，避免遗漏资源。",
       "v1.1.2": "重要提醒：插件需要完全卸载重装！！！更新说明：1. HDHive 新增资源查询模式切换及 Cookie 自动刷新功能；2. 重构代码。",

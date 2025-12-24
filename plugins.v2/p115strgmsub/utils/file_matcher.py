@@ -429,10 +429,22 @@ class FileMatcher:
 
             logger.info(f"检查网盘目录 {save_dir}，共 {len(files)} 个文件")
 
+            # DEBUG: 打印前3个文件的完整结构
+            if files:
+                for i, f in enumerate(files[:3]):
+                    logger.info(f"[DEBUG] 文件样本 {i+1}: {f}")
+
             # 使用MetaInfo识别每个文件的集数
             for file_info in files:
-                file_name = file_info.get("name", "")
-                is_dir = file_info.get("fid", 0) == 0  # fid=0表示目录
+                # fs_files API 返回 'n' 作为文件名字段，而非 'name'
+                file_name = file_info.get("n") or file_info.get("name", "")
+                # fid 字段: 0 表示目录，非0 表示文件
+                # 注意: 使用 None 作为默认值，避免将没有 fid 字段的文件误判为目录
+                fid = file_info.get("fid")
+                is_dir = (fid == 0 or fid == "0")
+                
+                # DEBUG: 显示每个文件的 fid 和判断结果
+                logger.info(f"文件: {file_name}, fid={fid}, is_dir={is_dir}")
 
                 # 跳过目录
                 if is_dir:

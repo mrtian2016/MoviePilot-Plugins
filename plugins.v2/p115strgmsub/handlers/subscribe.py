@@ -60,8 +60,20 @@ class SubscribeHandler:
                 new_note = list(set(current_note).union({1}))
 
             # 2. 更新缺失集数
+            # 根据已下载集数和总集数计算新的缺失集数
             current_lack = subscribe.lack_episode
-            new_lack = max(0, current_lack - len(success_episodes))
+            total_episode = subscribe.total_episode or 0
+            start_episode = subscribe.start_episode or 1
+            
+            if mediainfo.type == MediaType.TV and total_episode > 0:
+                # 计算实际缺失：总集数 - 开始集数之前的集数 - 已下载集数（note中的）
+                expected_episodes = set(range(start_episode, total_episode + 1))
+                downloaded_episodes = set(new_note)
+                remaining_episodes = expected_episodes - downloaded_episodes
+                new_lack = len(remaining_episodes)
+            else:
+                # 电影或无法计算时，使用简单减法
+                new_lack = max(0, current_lack - len(success_episodes))
 
             # 3. 一次性更新 note 和 lack_episode
             update_data = {}
