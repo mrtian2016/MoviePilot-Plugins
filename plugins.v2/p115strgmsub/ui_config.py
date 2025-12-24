@@ -255,7 +255,6 @@ class UIConfig:
         
         # 最近一次转存时间
         sorted_history = sorted(history, key=lambda x: x.get('time', ''), reverse=True) if history else []
-        logger.info(f"sorted_history: {sorted_history}")
         last_sync_time = sorted_history[0].get("time", "暂无") if sorted_history else "暂无"
         
         # 头部统计卡片 - 主要统计
@@ -395,21 +394,38 @@ class UIConfig:
                     {
                         'component': 'VRow',
                         'props': {'class': 'mt-4'},
-                        'content': [{
-                            'component': 'VCol',
-                            'props': {'cols': 12, 'class': 'text-center'},
-                            'content': [{
-                                'component': 'VBtn',
-                                'props': {'color': 'error', 'variant': 'outlined', 'size': 'small', 'prepend-icon': 'mdi-delete-sweep'},
-                                'text': '清空历史记录',
-                                'events': {
-                                    'click': {
-                                        'api': f'/plugin/P115StrgmSub/clear_history?apikey={settings.API_TOKEN}',
-                                        'method': 'post',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 6, 'class': 'text-center'},
+                                'content': [{
+                                    'component': 'VBtn',
+                                    'props': {'color': 'primary', 'variant': 'outlined', 'size': 'small', 'prepend-icon': 'mdi-magnify'},
+                                    'text': '立即搜索',
+                                    'events': {
+                                        'click': {
+                                            'api': f'/plugin/P115StrgmSub/sync_subscribes?apikey={settings.API_TOKEN}',
+                                            'method': 'get',
+                                        }
                                     }
-                                }
-                            }]
-                        }]
+                                }]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 6, 'class': 'text-center'},
+                                'content': [{
+                                    'component': 'VBtn',
+                                    'props': {'color': 'error', 'variant': 'outlined', 'size': 'small', 'prepend-icon': 'mdi-delete-sweep'},
+                                    'text': '清空历史记录',
+                                    'events': {
+                                        'click': {
+                                            'api': f'/plugin/P115StrgmSub/clear_history?apikey={settings.API_TOKEN}',
+                                            'method': 'post',
+                                        }
+                                    }
+                                }]
+                            }
+                        ]
                     }
                 ]
             }]
@@ -499,7 +515,7 @@ class UIConfig:
                     'props': {'class': 'd-flex align-center mt-1'},
                     'content': [
                         {'component': 'VIcon', 'props': {'size': 'x-small', 'color': 'grey', 'class': 'mr-1'}, 'text': 'mdi-file-video'},
-                        {'component': 'span', 'props': {'class': 'text-caption text-grey text-truncate', 'style': 'max-width: 400px;'}, 'text': file_name}
+                        {'component': 'span', 'props': {'class': 'text-caption text-grey text-truncate'}, 'text': file_name}
                     ]
                 })
             
