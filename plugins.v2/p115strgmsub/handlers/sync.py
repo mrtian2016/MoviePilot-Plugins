@@ -408,8 +408,9 @@ class SyncHandler:
                             if ep not in episode_history_scores or score > episode_history_scores[ep]:
                                 episode_history_scores[ep] = score
 
-            # 构建转存路径
-            save_dir = f"{self._save_path}/{mediainfo.title}/Season {season}"
+            # 构建转存路径（标题 + 年份，格式如 "权力的游戏 (2011)"）
+            show_folder = f"{mediainfo.title} ({mediainfo.year})" if mediainfo.year else mediainfo.title
+            save_dir = f"{self._save_path}/{show_folder}/Season {season}"
 
             # 检查网盘目录中已存在的剧集
             existing_episodes_in_cloud = FileMatcher.check_existing_episodes(

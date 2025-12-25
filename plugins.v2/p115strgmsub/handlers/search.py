@@ -224,7 +224,7 @@ class SearchHandler:
 
         # 电视剧使用降级搜索策略
         search_keywords = [
-            f"{mediainfo.title}第{season}季",  # 中文季号格式
+            f"{mediainfo.title}{season}",  # 中文季号格式
             mediainfo.title
         ]
 
