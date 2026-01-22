@@ -44,7 +44,7 @@ class P115StrgmSub(_PluginBase):
     # 插件版本
     plugin_version = "1.2.0"
     # 插件作者
-    plugin_author = "mrtian2016"
+    plugin_author = "frankk007"
     # 作者主页
     author_url = "https://github.com/mrtian2016"
     # 插件配置项ID前缀
