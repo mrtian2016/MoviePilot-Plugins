@@ -60,7 +60,7 @@ class P115StrgmSub(_PluginBase):
     # 配置属性
     _enabled: bool = False
     _onlyonce: bool = False
-    _cron: str = "0 */8 * * *"
+    _cron: str = "30 */8 * * *"  # ✅ 默认：每8小时一次（30分）
     _notify: bool = False
     _cookies: str = ""
     _pansou_enabled: bool = True
@@ -100,6 +100,48 @@ class P115StrgmSub(_PluginBase):
     _sync_handler: Optional[SyncHandler] = None
     _api_handler: Optional[ApiHandler] = None
 
+    # ✅ 最小触发间隔（小时）
+    _MIN_INTERVAL_HOURS: int = 8
+
+    @staticmethod
+    def _cron_interval_ge_min_hours(cron_expr: str, min_hours: int) -> bool:
+        """
+        校验 cron 的最小触发间隔是否 >= min_hours
+        做法：用 APScheduler CronTrigger 推演未来多次触发时间，计算相邻间隔的最小值
+        """
+        cron_expr = (cron_expr or "").strip()
+        if not cron_expr:
+            return False
+
+        try:
+            tz = pytz.timezone(settings.TZ)
+            trigger = CronTrigger.from_crontab(cron_expr, timezone=tz)
+        except Exception:
+            return False
+
+        now = datetime.datetime.now(tz=pytz.timezone(settings.TZ))
+
+        fire_times: List[datetime.datetime] = []
+        prev = None
+        current = now
+
+        # 推演未来 12 次触发
+        for _ in range(12):
+            nxt = trigger.get_next_fire_time(prev, current)
+            if not nxt:
+                break
+            fire_times.append(nxt)
+            prev = nxt
+            # 往后推进 1 秒，避免卡在同一时刻
+            current = nxt + datetime.timedelta(seconds=1)
+
+        # 少于2次触发：无法形成间隔（通常是极少见情况），默认放行
+        if len(fire_times) < 2:
+            return True
+
+        min_delta = min(fire_times[i + 1] - fire_times[i] for i in range(len(fire_times) - 1))
+        return min_delta >= datetime.timedelta(hours=min_hours)
+
     def _check_and_refresh_hdhive_cookie(self) -> Optional[str]:
         """
         检查并刷新 HDHive Cookie（如果需要）
@@ -135,9 +177,11 @@ class P115StrgmSub(_PluginBase):
         if new_cookie:
             token_info = get_hdhive_token_info(new_cookie)
             if token_info:
-                logger.info(f"HDHive: 新 Cookie 信息 - 用户ID: {token_info['user_id']}, "
-                           f"过期时间: {token_info['exp_time'].strftime('%Y-%m-%d %H:%M:%S')}, "
-                           f"有效时间: {token_info['time_left'] / 3600:.1f} 小时")
+                logger.info(
+                    f"HDHive: 新 Cookie 信息 - 用户ID: {token_info['user_id']}, "
+                    f"过期时间: {token_info['exp_time'].strftime('%Y-%m-%d %H:%M:%S')}, "
+                    f"有效时间: {token_info['time_left'] / 3600:.1f} 小时"
+                )
 
             self._hdhive_cookie = new_cookie
             self.__update_config()
@@ -155,7 +199,19 @@ class P115StrgmSub(_PluginBase):
 
         if config:
             self._enabled = config.get("enabled", False)
-            self._cron = config.get("cron", "30 */8 * * *")
+
+            # ✅ 关键：读取 UI 面板保存的 cron
+            self._cron = (config.get("cron", self._cron) or "").strip()
+
+            # ✅ 新增限制：cron 触发最小间隔必须 >= 8 小时，否则回退默认
+            if self._cron:
+                ok = self._cron_interval_ge_min_hours(self._cron, self._MIN_INTERVAL_HOURS)
+                if not ok:
+                    logger.warning(
+                        f"Cron 过于频繁（要求间隔>= {self._MIN_INTERVAL_HOURS}h）：{self._cron}，已回退默认 30 */8 * * *"
+                    )
+                    self._cron = "30 */8 * * *"
+
             self._notify = config.get("notify", False)
             self._onlyonce = config.get("onlyonce", False)
             self._cookies = config.get("cookies", "")
@@ -356,22 +412,33 @@ class P115StrgmSub(_PluginBase):
         ]
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """注册插件公共服务"""
+        """注册插件公共服务（强制最小间隔>=8小时）"""
         if self._enabled and self._cron:
-            return [{
-                "id": "P115StrgmSub",
-                "name": "115网盘订阅追更服务",
-                "trigger": CronTrigger.from_crontab(self._cron),
-                "func": self.sync_subscribes,
-                "kwargs": {}
-            }]
-        elif self._enabled:
+            # ✅ 再次校验（防止运行期间被改坏）
+            if not self._cron_interval_ge_min_hours(self._cron, self._MIN_INTERVAL_HOURS):
+                logger.warning(
+                    f"Cron 过于频繁（要求间隔>= {self._MIN_INTERVAL_HOURS}h）：{self._cron}，将回退 interval=8h"
+                )
+            else:
+                try:
+                    return [{
+                        "id": "P115StrgmSub",
+                        "name": "115网盘订阅追更服务",
+                        "trigger": CronTrigger.from_crontab(self._cron),
+                        "func": self.sync_subscribes,
+                        "kwargs": {}
+                    }]
+                except Exception as e:
+                    logger.warning(f"Cron 表达式无效：{self._cron}，将回退 interval=8h。错误：{e}")
+
+        # ✅ cron 为空/无效/过于频繁 -> interval 也必须 >= 8h
+        if self._enabled:
             return [{
                 "id": "P115StrgmSub",
                 "name": "115网盘订阅追更服务",
                 "trigger": "interval",
                 "func": self.sync_subscribes,
-                "kwargs": {"hours": 6}
+                "kwargs": {"hours": 8}
             }]
         return []
 
@@ -388,6 +455,7 @@ class P115StrgmSub(_PluginBase):
         """更新配置"""
         self.update_config({
             "enabled": self._enabled,
+            "cron": self._cron,  # ✅ 关键：写回 cron，避免被覆盖丢失
             "notify": self._notify,
             "onlyonce": self._onlyonce,
             "only_115": self._only_115,
@@ -642,3 +710,4 @@ class P115StrgmSub(_PluginBase):
             text="远程触发的订阅追更任务已完成，详情请查看追更通知或历史记录。",
             userid=event_data.get("user")
         )
+
