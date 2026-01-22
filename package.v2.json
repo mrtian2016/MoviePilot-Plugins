@@ -4,9 +4,9 @@
     "release": true,
     "description": "结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集。",
     "labels": "订阅,115网盘",
-    "version": "1.1.9",
+    "version": "1.2.0",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
-    "author": "mrtian2016",
+    "author": "frankk007",
     "level": 1,
     "history": {
       "v1.1.9": "1. 修复订阅完成状态检查时的异常处理。",
