@@ -6,7 +6,7 @@
     "labels": "订阅,115网盘",
     "version": "1.2.0",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
-    "author": "mrtian2016",
+    "author": "frankk007",
     "level": 1,
     "history": {
       "v1.2.0": "1. 自定义cron，执行间隔强制最低8h。",      
