@@ -23,8 +23,16 @@ class SubscribeHandler:
         self,
         exclude_subscribes: List[int] = None,
         notify: bool = False,
-        post_message_func: Callable = None
+        post_message_func: Callable = None,
+        get_data_func: Callable = None,
+        save_data_func: Callable = None,
     ):
+        self._exclude_subscribes = exclude_subscribes or []
+        self._notify = notify
+        self._post_message = post_message_func
+        self._get_data = get_data_func
+        self._save_data = save_data_func
+
         """
         初始化订阅处理器
 
