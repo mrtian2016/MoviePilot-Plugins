@@ -2,7 +2,7 @@
 订阅处理模块
 负责订阅状态检查、完成、站点更新等逻辑
 """
-from typing import List, Optional, Callable, Dict
+from typing import List, Optional, Callable, Dict, Any
 
 from sqlalchemy import text
 
@@ -36,6 +36,8 @@ class SubscribeHandler:
         self._notify = notify
         self._post_message = post_message_func
 
+    # ------------------ 订阅完成逻辑（原样保留） ------------------
+
     def check_and_finish_subscribe(
         self,
         subscribe,
@@ -50,14 +52,12 @@ class SubscribeHandler:
         :param success_episodes: 本次成功转存的集数列表（电影为[1]）
         """
         try:
-            # 1. 更新 note 字段（记录已下载集数，与系统订阅检查兼容）
             current_note = subscribe.note or []
             if mediainfo.type == MediaType.TV:
                 new_note = list(set(current_note).union(set(success_episodes)))
             else:
                 new_note = list(set(current_note).union({1}))
 
-            # 2. 更新缺失集数
             current_lack = subscribe.lack_episode or 0
             total_episode = subscribe.total_episode or 0
             start_episode = subscribe.start_episode or 1
@@ -70,7 +70,6 @@ class SubscribeHandler:
             else:
                 new_lack = max(0, current_lack - len(success_episodes))
 
-            # 3. 一次性更新 note 和 lack_episode
             update_data = {}
             if new_note != current_note:
                 update_data["note"] = new_note
@@ -82,7 +81,6 @@ class SubscribeHandler:
             if update_data:
                 SubscribeOper().update(subscribe.id, update_data)
 
-            # 检查是否完成
             if new_lack == 0:
                 logger.info(f"订阅 {subscribe.name} 所有内容已转存完成，准备完成订阅")
 
@@ -95,7 +93,6 @@ class SubscribeHandler:
                     logger.error(f'订阅 {subscribe.name} 类型错误：{subscribe.type}')
                     return
 
-                # 调用官方完成订阅接口
                 try:
                     SubscribeChain().finish_subscribe_or_not(
                         subscribe=subscribe,
@@ -131,34 +128,48 @@ class SubscribeHandler:
                 f"堆栈跟踪:\n{traceback.format_exc()}"
             )
 
-    # ========= 新增/改造：按“站点名”设置订阅 sites =========
+    # ------------------ 站点/订阅sites更新：增强版 ------------------
 
     @staticmethod
-    def _get_site_ids_by_names(db, site_names: List[str]) -> List[int]:
-        """
-        根据站点名称列表查询 site.id
-        - 找不到的名称会跳过，并记录 warning
-        """
+    def _normalize_site_names(site_names: List[str]) -> List[str]:
+        """清洗站点名：去空格、去重、过滤空值，保持原顺序"""
         if not site_names:
             return []
-        ids: List[int] = []
+        out = []
+        seen = set()
+        for x in site_names:
+            if x is None:
+                continue
+            s = str(x).strip()
+            if not s:
+                continue
+            if s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out
+
+    @staticmethod
+    def _get_site_ids_by_names(db, site_names: List[str]) -> Dict[str, int]:
+        """
+        根据站点名称列表查询 site.id
+        返回 dict: {name: id}
+        - 找不到的名称会跳过，并记录 warning
+        """
+        mapping: Dict[str, int] = {}
+        if not site_names:
+            return mapping
+
         for name in site_names:
             row = db.execute(
                 text("SELECT id FROM site WHERE name = :name LIMIT 1"),
                 {"name": name}
             ).fetchone()
             if row and row[0] is not None:
-                ids.append(int(row[0]))
+                mapping[name] = int(row[0])
             else:
                 logger.warning(f"未找到站点记录：name={name}（将跳过）")
-        # 去重保持顺序
-        seen = set()
-        out = []
-        for x in ids:
-            if x not in seen:
-                seen.add(x)
-                out.append(x)
-        return out
+        return mapping
 
     @staticmethod
     def _ensure_115_site_id(db) -> int:
@@ -174,7 +185,6 @@ class SubscribeHandler:
         if row and row[0] is not None:
             return int(row[0])
 
-        # fallback：插入 id=-1
         existing = Site.get(db, -1)
         if not existing:
             db.execute(
@@ -197,56 +207,114 @@ class SubscribeHandler:
             logger.info("已添加屏蔽站点记录 (id=-1, name=115网盘, is_active=True)")
         return -1
 
+    @staticmethod
+    def _guess_sites_storage_format(subscribes: List[Any]) -> str:
+        """
+        粗略判断 sites 字段存储格式：
+        - list/json: 直接写 list
+        - str: 写逗号字符串
+        """
+        for s in subscribes:
+            try:
+                v = getattr(s, "sites", None)
+                if isinstance(v, str):
+                    return "str"
+                if isinstance(v, list):
+                    return "list"
+            except Exception:
+                pass
+        return "list"
+
     def apply_subscribe_sites_by_site_names(self, site_names: List[str], action_desc: str = ""):
         """
         把所有订阅（除排除订阅）sites 设置为给定站点名对应的 site.id 列表
+        - ✅增强：解析不到任何站点时不写空 sites（避免系统订阅退化只跑单站）
+        - ✅增强：打印 name->id 映射与最终 sites 列表
         """
         action_desc = action_desc or f"设置订阅sites={site_names}"
         exclude_ids = set(self._exclude_subscribes or [])
 
+        site_names_norm = self._normalize_site_names(site_names)
+        if not site_names_norm:
+            logger.warning(f"{action_desc}：站点列表为空，跳过更新")
+            return
+
         with SessionFactory() as db:
-            site_ids = self._get_site_ids_by_names(db, site_names)
+            mapping = self._get_site_ids_by_names(db, site_names_norm)
+            # 按输入顺序生成 ids
+            site_ids: List[int] = []
+            for nm in site_names_norm:
+                if nm in mapping:
+                    site_ids.append(mapping[nm])
+
+            # 去重保序
+            seen = set()
+            site_ids_uniq = []
+            for x in site_ids:
+                if x in seen:
+                    continue
+                seen.add(x)
+                site_ids_uniq.append(x)
+
+            logger.info(f"{action_desc}：站点映射 name->id = {mapping}")
+            logger.info(f"{action_desc}：最终写入的 sites = {site_ids_uniq}")
+
+            if not site_ids_uniq:
+                # ✅关键兜底：不要写空
+                logger.warning(f"{action_desc}：未解析到任何有效站点ID，跳过写入（避免订阅退化）")
+                return
 
             subscribes = SubscribeOper(db=db).list() or []
+            storage = self._guess_sites_storage_format(subscribes)
+
             updated = 0
             excluded = 0
             for s in subscribes:
                 if s.id in exclude_ids:
                     excluded += 1
                     continue
-                SubscribeOper(db=db).update(s.id, {"sites": site_ids})
+
+                # 兼容不同格式
+                if storage == "str":
+                    value = ",".join(str(x) for x in site_ids_uniq)
+                else:
+                    value = site_ids_uniq
+
+                SubscribeOper(db=db).update(s.id, {"sites": value})
                 updated += 1
 
             if excluded:
                 logger.info(f"{action_desc}：跳过 {excluded} 个排除订阅")
-            logger.info(f"{action_desc}：已更新 {updated} 个订阅 sites={site_ids}")
+            logger.info(f"{action_desc}：已更新 {updated} 个订阅 sites={site_ids_uniq}")
 
     def set_unblocked_sites(self, unblocked_site_names: List[str]):
-        """
-        取消屏蔽时：勾选你图中的订阅站点（默认：观众/憨憨/馒头）
-        """
+        """取消屏蔽时：按 UI/默认配置勾选订阅站点"""
         self.apply_subscribe_sites_by_site_names(unblocked_site_names, action_desc="取消屏蔽：勾选订阅站点")
 
     def set_blocked_sites_only_115(self):
-        """
-        恢复屏蔽时：只勾选 115网盘
-        - 注意：订阅站点列表里要有 115网盘，若没有则插入 id=-1 的 115站点
-        """
+        """恢复屏蔽时：只勾选 115网盘（若无则插入 id=-1）"""
         with SessionFactory() as db:
             site_id_115 = self._ensure_115_site_id(db)
 
             subscribes = SubscribeOper(db=db).list() or []
+            storage = self._guess_sites_storage_format(subscribes)
             exclude_ids = set(self._exclude_subscribes or [])
+
             updated = 0
             excluded = 0
             for s in subscribes:
                 if s.id in exclude_ids:
                     excluded += 1
                     continue
-                SubscribeOper(db=db).update(s.id, {"sites": [site_id_115]})
+
+                if storage == "str":
+                    value = str(site_id_115)
+                else:
+                    value = [site_id_115]
+
+                SubscribeOper(db=db).update(s.id, {"sites": value})
                 updated += 1
 
             if excluded:
                 logger.info(f"恢复屏蔽：只勾选115网盘：跳过 {excluded} 个排除订阅")
             logger.info(f"恢复屏蔽：只勾选115网盘：已更新 {updated} 个订阅 sites={[site_id_115]}")
-            
