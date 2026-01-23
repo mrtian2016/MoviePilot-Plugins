@@ -2,7 +2,7 @@
 订阅处理模块
 负责订阅状态检查、完成、站点更新等逻辑
 """
-from typing import List, Optional, Callable, Dict
+from typing import List, Optional, Callable, Dict, Any
 
 from sqlalchemy import text
 
@@ -131,50 +131,36 @@ class SubscribeHandler:
                 f"堆栈跟踪:\n{traceback.format_exc()}"
             )
 
-    # ========= 新增/改造：按“站点名”设置订阅 sites =========
+    # ===================== 新增：站点 sites 相关 =====================
 
     @staticmethod
-    def _get_site_ids_by_names(db, site_names: List[str]) -> List[int]:
-        """
-        根据站点名称列表查询 site.id
-        - 找不到的名称会跳过，并记录 warning
-        """
-        if not site_names:
-            return []
-        ids: List[int] = []
-        for name in site_names:
-            row = db.execute(
-                text("SELECT id FROM site WHERE name = :name LIMIT 1"),
-                {"name": name}
-            ).fetchone()
-            if row and row[0] is not None:
-                ids.append(int(row[0]))
-            else:
-                logger.warning(f"未找到站点记录：name={name}（将跳过）")
-        # 去重保持顺序
-        seen = set()
-        out = []
-        for x in ids:
-            if x not in seen:
-                seen.add(x)
-                out.append(x)
-        return out
+    def _fetch_site_id_map(db) -> Dict[str, int]:
+        """从 site 表读取 name->id 映射"""
+        rows = db.execute(text("SELECT id, name FROM site")).fetchall()
+        m: Dict[str, int] = {}
+        for r in rows:
+            try:
+                sid = int(r[0])
+                name = str(r[1])
+                m[name] = sid
+            except Exception:
+                continue
+        return m
 
     @staticmethod
     def _ensure_115_site_id(db) -> int:
         """
-        确保存在“115网盘”站点可用于订阅 sites。
-        优先使用数据库里已有 name='115网盘' 的站点；
-        若不存在，则按原作者方式插入 id=-1 的 115站点，并返回 -1。
+        确保存在“115网盘”站点 id
+        - 先查 name='115网盘'
+        - 找不到则按原作者方式插入 id=-1
         """
         row = db.execute(
-            text("SELECT id FROM site WHERE name = :name LIMIT 1"),
+            text("SELECT id FROM site WHERE name=:name LIMIT 1"),
             {"name": "115网盘"}
         ).fetchone()
         if row and row[0] is not None:
             return int(row[0])
 
-        # fallback：插入 id=-1
         existing = Site.get(db, -1)
         if not existing:
             db.execute(
@@ -194,59 +180,135 @@ class SubscribeHandler:
                 }
             )
             db.commit()
-            logger.info("已添加屏蔽站点记录 (id=-1, name=115网盘, is_active=True)")
+            logger.info("已添加 115 网盘站点记录 (id=-1, name=115网盘)")
         return -1
 
-    def apply_subscribe_sites_by_site_names(self, site_names: List[str], action_desc: str = ""):
-        """
-        把所有订阅（除排除订阅）sites 设置为给定站点名对应的 site.id 列表
-        """
-        action_desc = action_desc or f"设置订阅sites={site_names}"
+    def _update_all_subscribe_sites(self, db, site_ids: List[int], action: str):
+        """把所有订阅（除排除）sites 更新为 site_ids"""
         exclude_ids = set(self._exclude_subscribes or [])
+        subscribes = SubscribeOper(db=db).list() or []
 
-        with SessionFactory() as db:
-            site_ids = self._get_site_ids_by_names(db, site_names)
+        updated = 0
+        excluded = 0
+        for s in subscribes:
+            if s.id in exclude_ids:
+                excluded += 1
+                continue
+            SubscribeOper(db=db).update(s.id, {"sites": site_ids})
+            updated += 1
 
-            subscribes = SubscribeOper(db=db).list() or []
-            updated = 0
-            excluded = 0
-            for s in subscribes:
-                if s.id in exclude_ids:
-                    excluded += 1
+        logger.info(f"{action}：已更新 {updated} 个订阅 sites={site_ids}（跳过 {excluded} 个排除订阅）")
+
+    def _try_update_global_subscribe_site_range(self, db, site_ids: List[int]):
+        """
+        尝试同步“全局订阅站点范围”（用于让 MP UI 的“设定->订阅->订阅站点”显示变化）
+        不同版本 MP 的 key 可能不同，因此这里做多策略兼容：
+        1) SystemConfigOper + SystemConfigKey 自动遍历
+        2) 直接 SQL 尝试更新 systemconfig 表中可能的 key
+        """
+        # --- 方案1：SystemConfigOper + SystemConfigKey ---
+        updated_keys = []
+        try:
+            from app.db.systemconfig_oper import SystemConfigOper
+            from app.core.config import SystemConfigKey
+
+            # 枚举所有包含 Subscribe + Site 的 key
+            cand = []
+            for n in dir(SystemConfigKey):
+                if "Subscribe" in n and ("Site" in n or "Sites" in n):
+                    try:
+                        cand.append(getattr(SystemConfigKey, n))
+                    except Exception:
+                        pass
+
+            # 去重
+            uniq = []
+            seen = set()
+            for k in cand:
+                if k in seen:
                     continue
-                SubscribeOper(db=db).update(s.id, {"sites": site_ids})
-                updated += 1
+                seen.add(k)
+                uniq.append(k)
 
-            if excluded:
-                logger.info(f"{action_desc}：跳过 {excluded} 个排除订阅")
-            logger.info(f"{action_desc}：已更新 {updated} 个订阅 sites={site_ids}")
+            for k in uniq:
+                try:
+                    ok = SystemConfigOper().set(k, site_ids)
+                    if ok:
+                        updated_keys.append(str(k))
+                except Exception:
+                    continue
 
-    def set_unblocked_sites(self, unblocked_site_names: List[str]):
+            if updated_keys:
+                logger.info(f"已同步全局订阅站点范围（SystemConfigKey）：{updated_keys} -> {site_ids}")
+                return
+        except Exception:
+            pass
+
+        # --- 方案2：SQL 直接更新 systemconfig ---
+        # 仅做 best-effort，不保证所有版本都有此表/字段
+        possible_keys = [
+            "SubscribeSites",
+            "SubscribeSite",
+            "SubscribeSiteIds",
+            "SubscribeSitesRange",
+            "SubscribeSearchSites",
+            "SubscribeSearchSiteIds",
+        ]
+        try:
+            # 尝试看看 systemconfig 表是否存在
+            rows = db.execute(text("SELECT key, value FROM systemconfig")).fetchmany(5)
+            _ = rows  # 只为触发异常
+        except Exception:
+            return
+
+        for k in possible_keys:
+            try:
+                db.execute(
+                    text("UPDATE systemconfig SET value=:value WHERE key=:key"),
+                    {"key": k, "value": site_ids}
+                )
+                db.commit()
+                logger.info(f"已尝试同步全局订阅站点范围：systemconfig.{k}={site_ids}")
+            except Exception:
+                continue
+
+    def set_sites_for_unblock(self, site_names: List[str]):
         """
-        取消屏蔽时：勾选你图中的订阅站点（默认：观众/憨憨/馒头）
+        取消屏蔽时：按站点名称列表设置订阅 sites
         """
-        self.apply_subscribe_sites_by_site_names(unblocked_site_names, action_desc="取消屏蔽：勾选订阅站点")
+        with SessionFactory() as db:
+            name_to_id = self._fetch_site_id_map(db)
+            ids = []
+            missing = []
 
-    def set_blocked_sites_only_115(self):
+            for n in site_names or []:
+                if n in name_to_id:
+                    ids.append(name_to_id[n])
+                else:
+                    missing.append(n)
+
+            # 去重保序
+            seen = set()
+            site_ids = []
+            for x in ids:
+                if x not in seen:
+                    seen.add(x)
+                    site_ids.append(x)
+
+            logger.info(f"取消屏蔽：站点名->id 映射：{ {n: name_to_id.get(n) for n in site_names} }")
+            if missing:
+                logger.warning(f"取消屏蔽：以下站点名在数据库 site 表中未找到，将被忽略：{missing}")
+
+            self._update_all_subscribe_sites(db, site_ids, action=f"取消屏蔽：勾选订阅站点({site_names})")
+            self._try_update_global_subscribe_site_range(db, site_ids)
+
+    def set_sites_for_block_only_115(self):
         """
         恢复屏蔽时：只勾选 115网盘
-        - 注意：订阅站点列表里要有 115网盘，若没有则插入 id=-1 的 115站点
         """
         with SessionFactory() as db:
-            site_id_115 = self._ensure_115_site_id(db)
-
-            subscribes = SubscribeOper(db=db).list() or []
-            exclude_ids = set(self._exclude_subscribes or [])
-            updated = 0
-            excluded = 0
-            for s in subscribes:
-                if s.id in exclude_ids:
-                    excluded += 1
-                    continue
-                SubscribeOper(db=db).update(s.id, {"sites": [site_id_115]})
-                updated += 1
-
-            if excluded:
-                logger.info(f"恢复屏蔽：只勾选115网盘：跳过 {excluded} 个排除订阅")
-            logger.info(f"恢复屏蔽：只勾选115网盘：已更新 {updated} 个订阅 sites={[site_id_115]}")
+            sid_115 = self._ensure_115_site_id(db)
+            logger.info(f"恢复屏蔽：115网盘 site_id={sid_115}")
+            self._update_all_subscribe_sites(db, [sid_115], action="恢复屏蔽：只勾选 115网盘")
+            self._try_update_global_subscribe_site_range(db, [sid_115])
 
