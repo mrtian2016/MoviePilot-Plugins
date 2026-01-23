@@ -4,11 +4,12 @@
     "release": true,
     "description": "结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集。",
     "labels": "订阅,115网盘",
-    "version": "1.2.1",
+    "version": "1.2.2",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
     "author": "frankk007",
     "level": 1,
     "history": {
+      "v1.2.2": "1. 1.2.1版本修改做进插件面板，修复订阅站点选中状态，修复订阅使用所有的订阅站点。",
       "v1.2.1": "1. 手动关闭屏蔽系统订阅/每天最后一次任务完成5min自动关闭屏蔽系统订阅，勾选订阅站点：馒头憨憨人人；2h后恢复屏蔽系统订阅，勾选订阅站点：115。",
       "v1.2.0": "1. 自定义cron，执行间隔强制最低8h。",      
       "v1.1.9": "1. 修复订阅完成状态检查时的异常处理。",
