@@ -56,6 +56,7 @@ class P115StrgmSub(_PluginBase):
 
     # 私有变量
     _scheduler: Optional[BackgroundScheduler] = None
+    _toggle_scheduler: Optional[BackgroundScheduler] = None  # ✅新增：用于5min/2h的自动开关任务
 
     # 配置属性
     _enabled: bool = False
@@ -87,6 +88,12 @@ class P115StrgmSub(_PluginBase):
     _max_transfer_per_sync: int = 50
     _batch_size: int = 20
     _skip_other_season_dirs: bool = True
+
+    # ✅你图里“取消屏蔽时勾选的站点”
+    # 你要改成别的站点，就改这三个名字
+    _UNBLOCK_SITE_NAMES: List[str] = ["观众", "憨憨", "馒头"]
+    # ✅恢复屏蔽时只勾选 115网盘
+    _BLOCK_SITE_NAMES: List[str] = ["115网盘"]
 
     # 运行时对象
     _pansou_client: Optional[PanSouClient] = None
@@ -125,29 +132,138 @@ class P115StrgmSub(_PluginBase):
         prev = None
         current = now
 
-        # 推演未来 12 次触发
         for _ in range(12):
             nxt = trigger.get_next_fire_time(prev, current)
             if not nxt:
                 break
             fire_times.append(nxt)
             prev = nxt
-            # 往后推进 1 秒，避免卡在同一时刻
             current = nxt + datetime.timedelta(seconds=1)
 
-        # 少于2次触发：无法形成间隔（通常是极少见情况），默认放行
         if len(fire_times) < 2:
             return True
 
         min_delta = min(fire_times[i + 1] - fire_times[i] for i in range(len(fire_times) - 1))
         return min_delta >= datetime.timedelta(hours=min_hours)
 
-    def _check_and_refresh_hdhive_cookie(self) -> Optional[str]:
-        """
-        检查并刷新 HDHive Cookie（如果需要）
+    # ========= ✅新增：自动开关的核心方法 =========
 
-        :return: 有效的 Cookie 字符串，失败返回 None
+    def _ensure_toggle_scheduler(self):
+        if not self._toggle_scheduler:
+            self._toggle_scheduler = BackgroundScheduler(timezone=settings.TZ)
+            self._toggle_scheduler.start()
+
+    def _cancel_toggle_jobs(self):
+        if not self._toggle_scheduler:
+            return
+        for job_id in ["p115_unblock_job", "p115_reblock_job"]:
+            try:
+                self._toggle_scheduler.remove_job(job_id)
+            except Exception:
+                pass
+
+    def _schedule_reblock_in_2h(self, base_time: datetime.datetime):
         """
+        在 base_time 基础上 2小时后恢复屏蔽（只勾选 115网盘）
+        """
+        self._ensure_toggle_scheduler()
+        tz = pytz.timezone(settings.TZ)
+        base_time = base_time.astimezone(tz)
+        run_date = base_time + datetime.timedelta(hours=2)
+
+        self._toggle_scheduler.add_job(
+            func=self._do_reblock,
+            trigger="date",
+            run_date=run_date,
+            id="p115_reblock_job",
+            replace_existing=True
+        )
+        logger.info(f"已安排：{run_date} 恢复屏蔽系统订阅（仅 115网盘）")
+
+    def _schedule_unblock_in_5min_then_reblock(self, base_time: datetime.datetime):
+        """
+        base_time + 5分钟：取消屏蔽（勾选图中站点）
+        再 +2小时：恢复屏蔽（仅115网盘）
+        """
+        self._ensure_toggle_scheduler()
+        tz = pytz.timezone(settings.TZ)
+        base_time = base_time.astimezone(tz)
+
+        unblock_time = base_time + datetime.timedelta(minutes=5)
+
+        self._toggle_scheduler.add_job(
+            func=self._do_unblock,
+            trigger="date",
+            run_date=unblock_time,
+            id="p115_unblock_job",
+            replace_existing=True
+        )
+        logger.info(f"已安排：{unblock_time} 取消屏蔽系统订阅（勾选图中站点），并将在其后2小时恢复屏蔽")
+
+        # reblock 在 unblock 真执行时再精确安排（保证“取消屏蔽后2小时”）
+        # 所以这里不直接 schedule reblock，避免因任务耗时造成偏差
+
+    def _do_unblock(self):
+        """
+        执行取消屏蔽：
+        - 插件开关置为 False
+        - 订阅 sites 勾选图中站点（观众/憨憨/馒头）
+        - 并安排 2小时后恢复屏蔽（仅 115网盘）
+        """
+        try:
+            self._init_subscribe_handler()
+            # 1) 设置订阅站点（图中勾选）
+            self._subscribe_handler.set_unblocked_sites(self._UNBLOCK_SITE_NAMES)
+
+            # 2) 更新插件开关 + 写回配置
+            self._block_system_subscribe = False
+            self.__update_config()
+            logger.info("已取消屏蔽系统订阅：block_system_subscribe=False")
+
+            # 3) 取消屏蔽后 2小时恢复屏蔽
+            tz = pytz.timezone(settings.TZ)
+            now = datetime.datetime.now(tz=tz)
+            self._schedule_reblock_in_2h(now)
+        except Exception as e:
+            logger.error(f"取消屏蔽执行失败：{e}")
+
+    def _do_reblock(self):
+        """
+        执行恢复屏蔽：
+        - 插件开关置为 True
+        - 订阅 sites 只勾选 115网盘
+        """
+        try:
+            self._init_subscribe_handler()
+            self._subscribe_handler.set_blocked_sites_only_115()
+
+            self._block_system_subscribe = True
+            self.__update_config()
+            logger.info("已恢复屏蔽系统订阅：block_system_subscribe=True（仅115网盘）")
+        except Exception as e:
+            logger.error(f"恢复屏蔽执行失败：{e}")
+
+    def _is_last_run_today(self, run_start: datetime.datetime) -> bool:
+        """
+        判断本次任务是否为“当天最后一次触发”
+        用 cron 推算下一次触发时间，若跨天则本次为最后一次
+        """
+        try:
+            tz = pytz.timezone(settings.TZ)
+            run_start = run_start.astimezone(tz)
+
+            trigger = CronTrigger.from_crontab(self._cron, timezone=tz)
+            nxt = trigger.get_next_fire_time(None, run_start + datetime.timedelta(seconds=1))
+            if not nxt:
+                return False
+            return nxt.date() != run_start.date()
+        except Exception as e:
+            logger.warning(f"判断是否当天最后一次触发失败：{e}，按 20:35 兜底")
+            return run_start.hour == 20 and run_start.minute == 35
+
+    # ========= 原逻辑：HDHive cookie =========
+
+    def _check_and_refresh_hdhive_cookie(self) -> Optional[str]:
         if not self._hdhive_auto_refresh:
             return self._hdhive_cookie if self._hdhive_cookie else None
 
@@ -194,16 +310,15 @@ class P115StrgmSub(_PluginBase):
     def init_plugin(self, config: dict = None):
         """初始化插件"""
         self.stop_service()
+        self._ensure_toggle_scheduler()
 
         download_so_file(Path(__file__).parent / "lib")
 
         if config:
             self._enabled = config.get("enabled", False)
 
-            # ✅ 关键：读取 UI 面板保存的 cron
             self._cron = (config.get("cron", self._cron) or "").strip()
 
-            # ✅ 新增限制：cron 触发最小间隔必须 >= 8 小时，否则回退默认
             if self._cron:
                 ok = self._cron_interval_ge_min_hours(self._cron, self._MIN_INTERVAL_HOURS)
                 if not ok:
@@ -239,13 +354,28 @@ class P115StrgmSub(_PluginBase):
             self._batch_size = int(config.get("batch_size", 20) or 20)
             self._skip_other_season_dirs = config.get("skip_other_season_dirs", True)
 
+            # ✅捕捉“插件面板手动关闭屏蔽系统订阅”
             new_block_state = config.get("block_system_subscribe", False)
             old_block_state = self._block_system_subscribe
             self._block_system_subscribe = new_block_state
 
             if new_block_state != old_block_state:
                 self._init_subscribe_handler()
-                self._subscribe_handler.update_subscribe_sites(new_block_state)
+
+                if new_block_state is False:
+                    # 手动关闭屏蔽：立刻勾选图中订阅站点，并在2小时后恢复屏蔽（仅115）
+                    logger.info("检测到面板手动关闭“屏蔽系统订阅”：立即勾选图中站点，并安排2小时后恢复屏蔽")
+                    self._cancel_toggle_jobs()
+                    self._subscribe_handler.set_unblocked_sites(self._UNBLOCK_SITE_NAMES)
+
+                    tz = pytz.timezone(settings.TZ)
+                    now = datetime.datetime.now(tz=tz)
+                    self._schedule_reblock_in_2h(now)
+                else:
+                    # 手动开启屏蔽：立即只勾选115，并取消窗口任务
+                    logger.info("检测到面板手动开启“屏蔽系统订阅”：立即只勾选115，并取消窗口任务")
+                    self._cancel_toggle_jobs()
+                    self._subscribe_handler.set_blocked_sites_only_115()
 
         self._init_clients()
         self._init_handlers()
@@ -414,7 +544,6 @@ class P115StrgmSub(_PluginBase):
     def get_service(self) -> List[Dict[str, Any]]:
         """注册插件公共服务（强制最小间隔>=8小时）"""
         if self._enabled and self._cron:
-            # ✅ 再次校验（防止运行期间被改坏）
             if not self._cron_interval_ge_min_hours(self._cron, self._MIN_INTERVAL_HOURS):
                 logger.warning(
                     f"Cron 过于频繁（要求间隔>= {self._MIN_INTERVAL_HOURS}h）：{self._cron}，将回退 interval=8h"
@@ -431,7 +560,6 @@ class P115StrgmSub(_PluginBase):
                 except Exception as e:
                     logger.warning(f"Cron 表达式无效：{self._cron}，将回退 interval=8h。错误：{e}")
 
-        # ✅ cron 为空/无效/过于频繁 -> interval 也必须 >= 8h
         if self._enabled:
             return [{
                 "id": "P115StrgmSub",
@@ -455,7 +583,7 @@ class P115StrgmSub(_PluginBase):
         """更新配置"""
         self.update_config({
             "enabled": self._enabled,
-            "cron": self._cron,  # ✅ 关键：写回 cron，避免被覆盖丢失
+            "cron": self._cron,
             "notify": self._notify,
             "onlyonce": self._onlyonce,
             "only_115": self._only_115,
@@ -496,13 +624,39 @@ class P115StrgmSub(_PluginBase):
         except Exception as e:
             logger.error(f"退出插件失败：{str(e)}")
 
+        try:
+            if self._toggle_scheduler:
+                self._toggle_scheduler.remove_all_jobs()
+                if self._toggle_scheduler.running:
+                    self._toggle_scheduler.shutdown()
+                self._toggle_scheduler = None
+        except Exception as e:
+            logger.error(f"退出开关调度器失败：{str(e)}")
+
     def sync_subscribes(self):
         """同步订阅，搜索并转存缺失剧集"""
         with lock:
-            self._do_sync()
+            tz = pytz.timezone(settings.TZ)
+            run_start = datetime.datetime.now(tz=tz)
 
-    def _do_sync(self):
-        """执行同步"""
+            success = False
+            try:
+                success = self._do_sync()  # ✅严格 success：_do_sync 返回 True 才算成功
+            except Exception as e:
+                logger.error(f"同步任务异常：{e}")
+                success = False
+            finally:
+                run_end = datetime.datetime.now(tz=tz)
+
+                # 触发条件1：每天最后一次任务成功跑完 -> 5分钟后取消屏蔽
+                if success and self._is_last_run_today(run_start):
+                    logger.info("检测到当天最后一次任务成功：安排5分钟后取消屏蔽，并在取消后2小时恢复屏蔽")
+                    self._cancel_toggle_jobs()
+                    self._schedule_unblock_in_5min_then_reblock(run_end)
+
+    def _do_sync(self) -> bool:
+        """执行同步。返回 True 表示成功跑完；返回 False 表示失败/提前退出。"""
+
         # 检查至少有一个搜索客户端可用
         if not self._pansou_enabled and not self._nullbr_enabled and not self._hdhive_enabled:
             logger.error("PanSou、Nullbr 和 HDHive 搜索源均未启用，请至少启用一个搜索源")
@@ -512,7 +666,7 @@ class P115StrgmSub(_PluginBase):
                     title="【115网盘订阅追更】配置错误",
                     text="PanSou、Nullbr 和 HDHive 搜索源均未启用，请至少启用一个搜索源。"
                 )
-            return
+            return False
 
         # 检查已启用的搜索源是否成功初始化
         has_valid_client = False
@@ -542,11 +696,11 @@ class P115StrgmSub(_PluginBase):
                     title="【115网盘订阅追更】配置错误",
                     text="所有已启用的搜索源均初始化失败，请检查 PanSou URL 或 Nullbr APP ID/API Key 配置。"
                 )
-            return
+            return False
 
         if not self._p115_manager:
             logger.error("115 客户端未初始化，请检查 Cookie 配置")
-            return
+            return False
 
         # 验证 115 登录状态
         if not self._p115_manager.check_login():
@@ -557,7 +711,7 @@ class P115StrgmSub(_PluginBase):
                     title="【115网盘订阅追更】登录失败",
                     text="115 Cookie 可能已过期，请更新配置后重试。"
                 )
-            return
+            return False
 
         logger.info("开始执行 115 网盘订阅追更...")
         if self._notify:
@@ -587,7 +741,7 @@ class P115StrgmSub(_PluginBase):
                     title="【115网盘订阅追更】执行完成",
                     text="当前没有订阅中的媒体数据。"
                 )
-            return
+            return True  # 没有订阅也算“成功跑完”
 
         # 分类订阅
         tv_subscribes = [s for s in subscribes if s.type == MediaType.TV.value]
@@ -595,7 +749,7 @@ class P115StrgmSub(_PluginBase):
 
         if not tv_subscribes and not movie_subscribes:
             logger.info("没有电视剧或电影订阅")
-            return
+            return True
 
         logger.info(f"共有 {len(tv_subscribes)} 个电视剧订阅、{len(movie_subscribes)} 个电影订阅待处理")
 
@@ -611,11 +765,9 @@ class P115StrgmSub(_PluginBase):
         for subscribe in movie_subscribes:
             if global_vars.is_system_stopped:
                 break
-
             if subscribe.id in exclude_ids:
                 logger.info(f"订阅 {subscribe.name} (ID:{subscribe.id}) 在排除列表中，跳过处理")
                 continue
-
             transferred_count = self._sync_handler.process_movie_subscribe(
                 subscribe=subscribe,
                 history=history,
@@ -627,11 +779,9 @@ class P115StrgmSub(_PluginBase):
         for subscribe in tv_subscribes:
             if global_vars.is_system_stopped:
                 break
-
             if subscribe.id in exclude_ids:
                 logger.info(f"订阅 {subscribe.name} (ID:{subscribe.id}) 在排除列表中，跳过处理")
                 continue
-
             transferred_count = self._sync_handler.process_tv_subscribe(
                 subscribe=subscribe,
                 history=history,
@@ -666,6 +816,8 @@ class P115StrgmSub(_PluginBase):
                     title="【115网盘订阅追更】执行完成",
                     text=f"本次同步完成，共处理 {len(tv_subscribes)} 个电视剧订阅、{len(movie_subscribes)} 个电影订阅，未发现需要转存的新资源。"
                 )
+
+        return True
 
     def api_search(self, keyword: str, apikey: str) -> dict:
         """API: 搜索网盘资源"""
