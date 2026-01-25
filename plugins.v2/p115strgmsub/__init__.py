@@ -93,7 +93,7 @@ class P115StrgmSub(_PluginBase):
     # 窗口配置：站点/延迟/窗口期
     _unblock_site_ids: List[int] = []
     _unblock_site_names: List[str] = ["观众", "憨憨", "馒头"]
-    _unblock_delay_minutes: int = 5          # -1 禁用触发条件1
+    _unblock_delay_minutes: int = 5          # -1 禁用触发条件1（并视为禁用窗口）
     _system_subscribe_window_hours: float = 2.0  # 0 禁用窗口
 
     # 运行时对象
@@ -176,7 +176,6 @@ class P115StrgmSub(_PluginBase):
         by_id = {s["id"]: s for s in site_records}
 
         final_ids: List[int] = []
-
         for sid in ids:
             if sid in by_id:
                 final_ids.append(sid)
@@ -319,7 +318,7 @@ class P115StrgmSub(_PluginBase):
         """
         已屏蔽系统订阅：
         - 全量订阅 sites=仅115
-        - 不再尝试设置屏蔽态默认站点=115（完全依赖事件兜底）
+        - 不再尝试设置屏蔽态默认站点=115（依赖事件兜底）
         - 取消所有窗口任务
         """
         self._ensure_toggle_scheduler()
@@ -453,7 +452,7 @@ class P115StrgmSub(_PluginBase):
                         SubscribeOper(db=db).update(sid, {"sites": [site_id_115]})
                 logger.info(f"已屏蔽系统订阅：新增订阅已拉回仅115（subscribe_id={sid}）")
             else:
-                # 已恢复系统订阅：新增订阅同步窗口站点（保持一致）
+                # 已恢复系统订阅：新增订阅同步窗口站点
                 if self._window_enabled() and hasattr(self._subscribe_handler, "set_sites_for_subscribe_by_names"):
                     self._subscribe_handler.set_sites_for_subscribe_by_names(sid, self._unblock_site_names)
                     logger.info(f"已恢复系统订阅：新增订阅已同步窗口站点（subscribe_id={sid}）")
@@ -492,10 +491,7 @@ class P115StrgmSub(_PluginBase):
             return self._hdhive_cookie if self._hdhive_cookie else None
 
         if self._hdhive_cookie:
-            is_valid, reason = check_hdhive_cookie_valid(
-                self._hdhive_cookie,
-                self._hdhive_refresh_before
-            )
+            is_valid, reason = check_hdhive_cookie_valid(self._hdhive_cookie, self._hdhive_refresh_before)
             if is_valid:
                 logger.info(f"HDHive: Cookie 检查通过 - {reason}")
                 return self._hdhive_cookie
@@ -505,10 +501,7 @@ class P115StrgmSub(_PluginBase):
             logger.info("HDHive: 未配置 Cookie，尝试登录获取")
 
         logger.info("HDHive: 开始刷新 Cookie...")
-        new_cookie = refresh_hdhive_cookie_with_playwright(
-            self._hdhive_username,
-            self._hdhive_password
-        )
+        new_cookie = refresh_hdhive_cookie_with_playwright(self._hdhive_username, self._hdhive_password)
 
         if new_cookie:
             token_info = get_hdhive_token_info(new_cookie)
@@ -591,7 +584,6 @@ class P115StrgmSub(_PluginBase):
                 config.get("unblock_window_hours", config.get("system_subscribe_window_hours", self._system_subscribe_window_hours))
             )
 
-            # 开关
             self._block_system_subscribe = bool(config.get("block_system_subscribe", False))
 
         # 初始化客户端/handlers
@@ -649,6 +641,10 @@ class P115StrgmSub(_PluginBase):
             else:
                 self._nullbr_client = NullbrClient(app_id=self._nullbr_appid, api_key=self._nullbr_api_key, proxy=proxy)
 
+        if self._cookies:
+            self._p115_manager = P115ClientManager(cookies=self._cookies)
+
+        # ApiHandler/SyncHandler 内部会用到 115 client manager
         if self._cookies:
             self._p115_manager = P115ClientManager(cookies=self._cookies)
 
@@ -756,6 +752,198 @@ class P115StrgmSub(_PluginBase):
         except Exception:
             pass
 
+    # ======================================================================
+    # ✅✅✅ 补齐：get_state / get_form / get_page / get_api / get_service
+    # ======================================================================
+
+    def get_state(self) -> bool:
+        return self._enabled
+
+    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        return UIConfig.get_form()
+
+    def get_page(self) -> Optional[List[dict]]:
+        history = self.get_data('history') or []
+        return UIConfig.get_page(history)
+
+    def get_api(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "path": "/sync_subscribes",
+                "endpoint": self.sync_subscribes,
+                "methods": ["GET"],
+                "summary": "执行同步订阅追更"
+            },
+            {
+                "path": "/clear_history",
+                "endpoint": self.api_clear_history,
+                "methods": ["POST"],
+                "summary": "清空历史记录"
+            }
+        ]
+
+    def get_service(self) -> List[Dict[str, Any]]:
+        """
+        注册插件定时任务
+        - cron 合法则用 cron
+        - 否则回退 interval=8h
+        """
+        if not self._enabled:
+            return []
+
+        if self._cron and self._cron_interval_ge_min_hours(self._cron, self._MIN_INTERVAL_HOURS):
+            try:
+                return [{
+                    "id": "P115StrgmSub",
+                    "name": "115网盘订阅增强服务",
+                    "trigger": CronTrigger.from_crontab(self._cron),
+                    "func": self.sync_subscribes,
+                    "kwargs": {}
+                }]
+            except Exception as e:
+                logger.warning(f"Cron 表达式无效：{self._cron}，将回退 interval=8h。错误：{e}")
+
+        return [{
+            "id": "P115StrgmSub",
+            "name": "115网盘订阅增强服务",
+            "trigger": "interval",
+            "func": self.sync_subscribes,
+            "kwargs": {"hours": 8}
+        }]
+
+    # ======================================================================
+    # ✅✅✅ 补齐：_do_sync（返回 bool）
+    # ======================================================================
+
+    def _do_sync(self) -> bool:
+        """
+        执行同步。返回 True 表示成功跑完；False 表示失败/提前退出。
+        """
+        # 至少启用一个搜索源
+        if not self._pansou_enabled and not self._nullbr_enabled and not self._hdhive_enabled:
+            logger.error("搜索源均未启用（PanSou/Nullbr/HDHive），无法执行")
+            if self._notify:
+                self.post_message(
+                    mtype=NotificationType.Plugin,
+                    title="【115网盘订阅增强】配置错误",
+                    text="PanSou、Nullbr、HDHive 均未启用，请至少启用一个搜索源。"
+                )
+            return False
+
+        # 115 客户端检查
+        if not self._p115_manager:
+            logger.error("115 客户端未初始化，请检查 Cookie 配置")
+            return False
+
+        if not self._p115_manager.check_login():
+            logger.error("115 登录失败，Cookie 可能已过期")
+            if self._notify:
+                self.post_message(
+                    mtype=NotificationType.Manual,
+                    title="【115网盘订阅增强】登录失败",
+                    text="115 Cookie 可能已过期，请更新后重试。"
+                )
+            return False
+
+        logger.info("开始执行 115 网盘订阅增强同步...")
+        if self._notify:
+            self.post_message(
+                mtype=NotificationType.Plugin,
+                title="【115网盘订阅增强】开始执行",
+                text="正在扫描订阅列表并同步缺失内容..."
+            )
+
+        # reset api counters
+        try:
+            self._p115_manager.reset_api_call_count()
+        except Exception:
+            pass
+        try:
+            if self._pansou_client:
+                self._pansou_client.reset_api_call_count()
+        except Exception:
+            pass
+        try:
+            if self._nullbr_client:
+                self._nullbr_client.reset_api_call_count()
+        except Exception:
+            pass
+
+        # 获取订阅
+        with SessionFactory() as db:
+            subscribes = SubscribeOper(db=db).list("N,R")
+
+        if not subscribes:
+            logger.info("无订阅数据")
+            if self._notify:
+                self.post_message(
+                    mtype=NotificationType.Plugin,
+                    title="【115网盘订阅增强】执行完成",
+                    text="当前无订阅数据。"
+                )
+            return True
+
+        tv_subscribes = [s for s in subscribes if s.type == MediaType.TV.value]
+        movie_subscribes = [s for s in subscribes if s.type == MediaType.MOVIE.value]
+
+        if not tv_subscribes and not movie_subscribes:
+            logger.info("无电影/剧集订阅")
+            return True
+
+        history: List[dict] = self.get_data('history') or []
+        transfer_details: List[Dict[str, Any]] = []
+        transferred_count = 0
+
+        exclude_ids = set(self._exclude_subscribes or [])
+
+        # 处理电影
+        for subscribe in movie_subscribes:
+            if global_vars.is_system_stopped:
+                break
+            if subscribe.id in exclude_ids:
+                continue
+            transferred_count = self._sync_handler.process_movie_subscribe(
+                subscribe=subscribe,
+                history=history,
+                transfer_details=transfer_details,
+                transferred_count=transferred_count
+            )
+
+        # 处理剧集
+        for subscribe in tv_subscribes:
+            if global_vars.is_system_stopped:
+                break
+            if subscribe.id in exclude_ids:
+                continue
+            transferred_count = self._sync_handler.process_tv_subscribe(
+                subscribe=subscribe,
+                history=history,
+                transfer_details=transfer_details,
+                transferred_count=transferred_count,
+                exclude_ids=exclude_ids
+            )
+
+        self.save_data('history', history[-500:])
+
+        logger.info(f"115 网盘订阅增强同步完成，共转存 {transferred_count} 个文件")
+
+        if self._notify:
+            if transferred_count > 0:
+                self._sync_handler.send_transfer_notification(transfer_details, transferred_count)
+            else:
+                self.post_message(
+                    mtype=NotificationType.Plugin,
+                    title="【115网盘订阅增强】执行完成",
+                    text="本次同步未发现需要转存的新资源。"
+                )
+
+        return True
+
+    # ------------------ API包装（用于 get_api） ------------------
+
+    def api_clear_history(self, apikey: str) -> dict:
+        return self._api_handler.clear_history(apikey)
+
     # ------------------ 同步入口（触发条件1） ------------------
 
     def sync_subscribes(self):
@@ -777,16 +965,13 @@ class P115StrgmSub(_PluginBase):
                     else:
                         self._schedule_unblock_after_delay(datetime.datetime.now(tz=pytz.timezone(settings.TZ)))
 
-    # ------------------ 你原版的 get_api/remote_sync 等可以继续沿用 ------------------
+    # ------------------ 你原版的 api/remote_sync 继续沿用 ------------------
 
     def api_search(self, keyword: str, apikey: str) -> dict:
         return self._api_handler.search(keyword, apikey)
 
     def api_transfer(self, share_url: str, save_path: str, apikey: str) -> dict:
         return self._api_handler.transfer(share_url, save_path, apikey)
-
-    def api_clear_history(self, apikey: str) -> dict:
-        return self._api_handler.clear_history(apikey)
 
     def api_list_directories(self, path: str = "/", apikey: str = "") -> dict:
         return self._api_handler.list_directories(path, apikey)
