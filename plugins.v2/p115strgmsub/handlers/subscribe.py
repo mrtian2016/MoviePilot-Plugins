@@ -268,11 +268,11 @@ class SubscribeHandler:
             logger.info(f"已屏蔽系统订阅：全量订阅仅115网盘（已更新 {updated} 个，跳过 {excluded} 个排除订阅）")
             return [site_id_115]
 
-    # ------------------ 单条订阅站点写入（事件兜底用） ------------------
+    # ------------------ 新增订阅站点写入（事件兜底用） ------------------
 
     def set_sites_for_subscribe_only_115(self, subscribe_id: int) -> List[int]:
         """
-        单条订阅写入：仅115
+        新增订阅写入：仅115
         - v1.2.5：仅用于 SubscribeAdded（新订阅兜底）
         """
         with SessionFactory() as db:
@@ -280,17 +280,17 @@ class SubscribeHandler:
             storage = self._guess_sites_storage_format_for_subscribe(db, int(subscribe_id))
             value = str(site_id_115) if storage == "str" else [site_id_115]
             SubscribeOper(db=db).update(int(subscribe_id), {"sites": value})
-            logger.info(f"已屏蔽系统订阅：单条订阅已拉回仅115（subscribe_id={subscribe_id}）")
+            logger.info(f"已屏蔽系统订阅：检测到新增订阅，准备拉回仅115（subscribe_id={subscribe_id}）")
             return [site_id_115]
 
     def set_sites_for_subscribe_by_names(self, subscribe_id: int, site_names: List[str]) -> List[int]:
         """
-        单条订阅写入：窗口站点
+        新增订阅写入：窗口站点
         - 用于“已恢复系统订阅”状态下，新订阅保持一致
         """
         site_names_norm = self._normalize_site_names(site_names)
         if not site_names_norm:
-            logger.warning(f"已恢复系统订阅：单条订阅站点列表为空（subscribe_id={subscribe_id}），跳过")
+            logger.warning(f"已恢复系统订阅：新增订阅站点列表为空（subscribe_id={subscribe_id}），跳过")
             return []
 
         with SessionFactory() as db:
@@ -309,11 +309,11 @@ class SubscribeHandler:
                 site_ids_uniq.append(x)
 
             if not site_ids_uniq:
-                logger.warning(f"已恢复系统订阅：单条订阅未解析到站点ID（subscribe_id={subscribe_id}），跳过")
+                logger.warning(f"已恢复系统订阅：新增订阅未解析到站点ID（subscribe_id={subscribe_id}），跳过")
                 return []
 
             storage = self._guess_sites_storage_format_for_subscribe(db, int(subscribe_id))
             value = ",".join(str(x) for x in site_ids_uniq) if storage == "str" else site_ids_uniq
             SubscribeOper(db=db).update(int(subscribe_id), {"sites": value})
-            logger.info(f"已恢复系统订阅：单条订阅已同步窗口站点（subscribe_id={subscribe_id}）")
+            logger.info(f"已恢复系统订阅：新增订阅已同步窗口站点（subscribe_id={subscribe_id}）")
             return site_ids_uniq
