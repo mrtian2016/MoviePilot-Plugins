@@ -416,8 +416,8 @@ class P115StrgmSub(_PluginBase):
                 return False
             return nxt.date() != run_start.date()
         except Exception as e:
-            logger.warning(f"判断是否当天最后一次触发失败：{e}，按 20:35 兜底")
-            return run_start.hour == 20 and run_start.minute == 35
+            logger.warning(f"判断是否当天最后一次触发失败：{e}，按 23:00 兜底")
+            return run_start.hour == 23 and run_start.minute == 00
 
     # ------------------ 事件兜底：SubscribeAdded 保留，SubscribeModified 禁用写入 ------------------
 
@@ -453,7 +453,7 @@ class P115StrgmSub(_PluginBase):
                     site_id_115 = self._ensure_115_site_id()
                     with SessionFactory() as db:
                         SubscribeOper(db=db).update(sid, {"sites": [site_id_115]})
-                logger.info(f"已屏蔽系统订阅：订阅改动已拉回仅115（subscribe_id={sid}）")
+                logger.info(f"已屏蔽系统订阅：新增订阅已拉回仅115（subscribe_id={sid}）")
             else:
                 if self._window_enabled() and hasattr(self._subscribe_handler, "set_sites_for_subscribe_by_names"):
                     self._subscribe_handler.set_sites_for_subscribe_by_names(sid, self._unblock_site_names)
