@@ -106,8 +106,8 @@ class UIConfig:
                                  'props': {
                                      'model': 'cron',
                                      'label': '执行周期（Cron）',
-                                     'placeholder': '30 */8 * * *',
-                                     'hint': '5段 Cron：分 时 日 月 周；例：30 */8 * * * 表示每8小时的30分执行',
+                                     'placeholder': '30 2,10,18 * * *',
+                                     'hint': '5段 Cron：分 时 日 月 周；例：2,10,18 * * * 表示2点、10点、18点的30分执行',
                                      'persistent-hint': True,
                                      'clearable': True
                                  }
@@ -163,7 +163,7 @@ class UIConfig:
                                         'label': '每天最后一次任务后延迟（分钟）',
                                         'type': 'number',
                                         'placeholder': '5',
-                                        'hint': '设为-1表示禁用触发条件，并且窗口机制也不会进入（始终保持屏蔽）',
+                                        'hint': '设为-1表示禁用窗口：始终保持屏蔽（仅115网盘）',
                                         'persistent-hint': True,
                                         'clearable': True
                                     }
