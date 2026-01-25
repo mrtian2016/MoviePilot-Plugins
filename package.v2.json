@@ -4,11 +4,12 @@
     "release": true,
     "description": "结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集；支持订阅模式自动切换：默认使用115订阅，缺失剧集通过系统订阅兜底补全。",
     "labels": "订阅,115网盘",
-    "version": "1.2.4",
+    "version": "1.2.5",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
     "author": "frankk007",
     "level": 1,
     "history": {
+      "v1.2.4": "1. 手动修改订阅站点不会被改成115。",
       "v1.2.4": "1. 屏蔽系统订阅状态下，出现新增订阅立刻把该订阅的 sites 改成115。",
       "v1.2.3": "1. 屏蔽系统订阅状态下，强制系统默认订阅为115；2.新增两种触发条件维持屏蔽系统订阅。",
       "v1.2.2": "1. 支持“最后一次任务后延迟取消屏蔽”和“手动关屏蔽立即生效”；新增取消屏蔽站点选择与窗口期时长；到期自动恢复仅115；站点解析更稳，避免写空sites。",
