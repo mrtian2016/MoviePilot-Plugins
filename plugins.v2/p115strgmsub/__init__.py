@@ -41,7 +41,7 @@ class P115StrgmSub(_PluginBase):
     plugin_name = "115网盘订阅增强"
     plugin_desc = "结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集；支持订阅模式自动切换：默认使用115订阅，缺失剧集通过系统订阅兜底补全。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
-    plugin_version = "1.2.4"
+    plugin_version = "1.2.5"
     plugin_author = "frankk007"
     author_url = "https://github.com/frankk007"
     plugin_config_prefix = "p115strgmsub_"
