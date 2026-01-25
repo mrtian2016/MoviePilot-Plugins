@@ -163,7 +163,7 @@ class UIConfig:
                                         'label': '每天最后一次任务后延迟（分钟）',
                                         'type': 'number',
                                         'placeholder': '5',
-                                        'hint': '设为-1表示禁用触发条件1，并且窗口机制也不会进入（始终保持屏蔽）',
+                                        'hint': '设为-1表示禁用触发条件，并且窗口机制也不会进入（始终保持屏蔽）',
                                         'persistent-hint': True,
                                         'clearable': True
                                     }
