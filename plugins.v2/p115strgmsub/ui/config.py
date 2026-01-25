@@ -163,7 +163,7 @@ class UIConfig:
                                         'label': '每天最后一次任务后延迟（分钟）',
                                         'type': 'number',
                                         'placeholder': '5',
-                                        'hint': '设为-1表示禁用窗口：始终保持屏蔽（仅115网盘）',
+                                        'hint': '设为-1表示禁用窗口：始终保持屏蔽（仅115网盘）；否则23:00兜底恢复系统订阅',
                                         'persistent-hint': True,
                                         'clearable': True
                                     }
@@ -331,12 +331,12 @@ class UIConfig:
             "notify": True,
             "onlyonce": False,
             "only_115": True,
-            "cron": "30 */8 * * *",
+            "cron": "30 2,10,18 * * *",
 
             "unblock_site_ids": [],
-            "unblock_site_names": ["观众", "憨憨", "馒头"],
-            "unblock_window_hours": 2,
-            "system_subscribe_window_hours": 2,
+            "unblock_site_names": [],
+            "unblock_window_hours": 1,
+            "system_subscribe_window_hours": 1,
             "unblock_delay_minutes": 5,
 
             "save_path": "/我的接收/MoviePilot/TV",
