@@ -94,7 +94,7 @@ class P115StrgmSub(_PluginBase):
     _unblock_site_ids: List[int] = []
     _unblock_site_names: List[str] = ["观众", "憨憨", "馒头"]
     _unblock_delay_minutes: int = 5          # -1 禁用触发条件1（并视为禁用窗口）
-    _system_subscribe_window_hours: float = 2.0  # 0 禁用窗口
+    _system_subscribe_window_hours: float = 1.0  # 0 禁用窗口
 
     # 运行时对象
     _pansou_client: Optional[PanSouClient] = None
@@ -318,7 +318,7 @@ class P115StrgmSub(_PluginBase):
         """
         已屏蔽系统订阅：
         - 全量订阅 sites=仅115
-        - 不再尝试设置屏蔽态默认站点=115（依赖事件兜底）
+        - 不再尝试设置屏蔽态默认站点=115（依赖 SubscribeAdded 兜底）
         - 取消所有窗口任务
         """
         self._ensure_toggle_scheduler()
@@ -336,7 +336,6 @@ class P115StrgmSub(_PluginBase):
         - 全量订阅 sites=UI站点
         - 尽力设置系统默认订阅站点=UI站点（若存在key）
         - 从进入时刻计窗口，到期切回屏蔽
-        - 若窗口无效：保持屏蔽并回写开关
         """
         if not self._window_enabled():
             self._block_system_subscribe = True
@@ -420,7 +419,7 @@ class P115StrgmSub(_PluginBase):
             logger.warning(f"判断是否当天最后一次触发失败：{e}，按 20:35 兜底")
             return run_start.hour == 20 and run_start.minute == 35
 
-    # ------------------ 事件兜底：SubscribeAdded / SubscribeModified ------------------
+    # ------------------ 事件兜底：SubscribeAdded 保留，SubscribeModified 禁用写入 ------------------
 
     def _get_subscribe_id_from_event(self, event: Event) -> Optional[int]:
         if not event or not event.event_data:
@@ -436,6 +435,11 @@ class P115StrgmSub(_PluginBase):
 
     @eventmanager.register(EventType.SubscribeAdded)
     def on_subscribe_added(self, event: Event):
+        """
+        ✅ 保留：新订阅兜底
+        - 已屏蔽系统订阅时：新订阅必拉回仅115
+        - 已恢复系统订阅时：新订阅同步窗口站点（保持一致）
+        """
         sid = self._get_subscribe_id_from_event(event)
         if not sid:
             return
@@ -443,44 +447,35 @@ class P115StrgmSub(_PluginBase):
             self._init_subscribe_handler()
 
             if self._block_system_subscribe:
-                # 已屏蔽系统订阅：新增订阅一律拉回仅115
                 if hasattr(self._subscribe_handler, "set_sites_for_subscribe_only_115"):
                     self._subscribe_handler.set_sites_for_subscribe_only_115(sid)
                 else:
                     site_id_115 = self._ensure_115_site_id()
                     with SessionFactory() as db:
                         SubscribeOper(db=db).update(sid, {"sites": [site_id_115]})
-                logger.info(f"已屏蔽系统订阅：新增订阅已拉回仅115（subscribe_id={sid}）")
+                logger.info(f"已屏蔽系统订阅：订阅改动已拉回仅115（subscribe_id={sid}）")
             else:
-                # 已恢复系统订阅：新增订阅同步窗口站点
                 if self._window_enabled() and hasattr(self._subscribe_handler, "set_sites_for_subscribe_by_names"):
                     self._subscribe_handler.set_sites_for_subscribe_by_names(sid, self._unblock_site_names)
-                    logger.info(f"已恢复系统订阅：新增订阅已同步窗口站点（subscribe_id={sid}）")
+                    logger.info(f"已恢复系统订阅：新增订阅已同步窗口站点（subscribe_id={sid})")
 
         except Exception as e:
             logger.error(f"SubscribeAdded 兜底失败：{e}")
 
     @eventmanager.register(EventType.SubscribeModified)
     def on_subscribe_modified(self, event: Event):
+        """
+        ✅ 禁用：不再对 subscribe.modified 做拉回写入
+        目的：用户手动修改订阅站点时，不再被自动拉回仅115
+        """
         sid = self._get_subscribe_id_from_event(event)
         if not sid:
             return
-        if not self._block_system_subscribe:
-            return
-        try:
-            self._init_subscribe_handler()
-            # 已屏蔽系统订阅：订阅改动一律拉回仅115
-            if hasattr(self._subscribe_handler, "set_sites_for_subscribe_only_115"):
-                self._subscribe_handler.set_sites_for_subscribe_only_115(sid)
-            else:
-                site_id_115 = self._ensure_115_site_id()
-                with SessionFactory() as db:
-                    SubscribeOper(db=db).update(sid, {"sites": [site_id_115]})
-            logger.info(f"已屏蔽系统订阅：订阅改动已拉回仅115（subscribe_id={sid}）")
-        except Exception as e:
-            logger.error(f"SubscribeModified 兜底失败：{e}")
+        if self._block_system_subscribe:
+            logger.info(f"已屏蔽系统订阅：检测到订阅改动，按规则不自动拉回（subscribe_id={sid}）")
+        return
 
-    # ------------------ HDHive cookie（原样保留） ------------------
+    # ------------------ HDHive cookie（保留） ------------------
 
     def _check_and_refresh_hdhive_cookie(self) -> Optional[str]:
         if not self._hdhive_auto_refresh:
@@ -518,7 +513,7 @@ class P115StrgmSub(_PluginBase):
         logger.error("HDHive: Cookie 刷新失败")
         return self._hdhive_cookie if self._hdhive_cookie else None
 
-    # ------------------ init_plugin（触发条件2 + 配置立即生效） ------------------
+    # ------------------ init_plugin ------------------
 
     def init_plugin(self, config: dict = None):
         self.stop_service()
@@ -597,7 +592,7 @@ class P115StrgmSub(_PluginBase):
             self._enter_blocked(reason="触发条件2（窗口无效）")
             return
 
-        # 配置立即生效：不管开关是否变化，立刻按当前态重写订阅 sites，且恢复态重置窗口计时
+        # 配置立即生效
         if self._block_system_subscribe:
             self._enter_blocked(reason="配置应用")
         else:
@@ -641,10 +636,6 @@ class P115StrgmSub(_PluginBase):
             else:
                 self._nullbr_client = NullbrClient(app_id=self._nullbr_appid, api_key=self._nullbr_api_key, proxy=proxy)
 
-        if self._cookies:
-            self._p115_manager = P115ClientManager(cookies=self._cookies)
-
-        # ApiHandler/SyncHandler 内部会用到 115 client manager
         if self._cookies:
             self._p115_manager = P115ClientManager(cookies=self._cookies)
 
@@ -753,7 +744,7 @@ class P115StrgmSub(_PluginBase):
             pass
 
     # ======================================================================
-    # ✅✅✅ 补齐：get_state / get_form / get_page / get_api / get_service
+    # ✅ 必备：get_state / get_form / get_page / get_api / get_service
     # ======================================================================
 
     def get_state(self) -> bool:
@@ -783,11 +774,6 @@ class P115StrgmSub(_PluginBase):
         ]
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """
-        注册插件定时任务
-        - cron 合法则用 cron
-        - 否则回退 interval=8h
-        """
         if not self._enabled:
             return []
 
@@ -812,13 +798,10 @@ class P115StrgmSub(_PluginBase):
         }]
 
     # ======================================================================
-    # ✅✅✅ 补齐：_do_sync（返回 bool）
+    # ✅ 必备：_do_sync（返回 bool）
     # ======================================================================
 
     def _do_sync(self) -> bool:
-        """
-        执行同步。返回 True 表示成功跑完；False 表示失败/提前退出。
-        """
         # 至少启用一个搜索源
         if not self._pansou_enabled and not self._nullbr_enabled and not self._hdhive_enabled:
             logger.error("搜索源均未启用（PanSou/Nullbr/HDHive），无法执行")
@@ -959,13 +942,12 @@ class P115StrgmSub(_PluginBase):
                 success = False
             finally:
                 if success and self._is_last_run_today(run_start):
-                    # delay<0 或窗口无效 => 保持屏蔽
                     if int(self._unblock_delay_minutes) < 0 or (not self._window_enabled()):
                         self._enter_blocked(reason="触发条件1")
                     else:
                         self._schedule_unblock_after_delay(datetime.datetime.now(tz=pytz.timezone(settings.TZ)))
 
-    # ------------------ 你原版的 api/remote_sync 继续沿用 ------------------
+    # ------------------ 业务 API（保留） ------------------
 
     def api_search(self, keyword: str, apikey: str) -> dict:
         return self._api_handler.search(keyword, apikey)
