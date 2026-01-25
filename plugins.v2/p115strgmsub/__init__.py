@@ -1,8 +1,8 @@
 """
 115网盘订阅增强插件
-结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集；支持订阅模式自动切换：默认使用115订阅，缺失剧集通过系统订阅兜底补全
+结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集；
+支持订阅模式自动切换：默认使用115订阅，缺失剧集通过系统订阅兜底补全
 """
-
 import datetime
 from pathlib import Path
 from threading import Lock
@@ -11,11 +11,13 @@ from typing import Optional, Any, List, Dict, Tuple
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import text
 
 from app.core.config import settings, global_vars
 from app.core.event import Event, eventmanager
 from app.db import SessionFactory
 from app.db.subscribe_oper import SubscribeOper
+from app.db.models.site import Site
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType, MediaType, NotificationType
@@ -34,21 +36,21 @@ lock = Lock()
 
 
 class P115StrgmSub(_PluginBase):
-    """115网盘订阅追更插件"""
+    """115网盘订阅增强插件"""
 
-    plugin_name = "115网盘订阅追更"
-    plugin_desc = "结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失的电影和剧集。"
+    plugin_name = "115网盘订阅增强"
+    plugin_desc = "结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集；支持订阅模式自动切换：默认使用115订阅，缺失剧集通过系统订阅兜底补全。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
-    plugin_version = "1.2.3"
+    plugin_version = "1.2.4"
     plugin_author = "frankk007"
-    author_url = "https://github.com/mrtian2016"
+    author_url = "https://github.com/frankk007"
     plugin_config_prefix = "p115strgmsub_"
     plugin_order = 20
     auth_level = 1
 
     # 私有变量
     _scheduler: Optional[BackgroundScheduler] = None
-    _toggle_scheduler: Optional[BackgroundScheduler] = None  # 用于窗口期任务
+    _toggle_scheduler: Optional[BackgroundScheduler] = None  # 用于延迟切换/窗口切换
 
     # 配置属性
     _enabled: bool = False
@@ -67,7 +69,6 @@ class P115StrgmSub(_PluginBase):
     _save_path: str = "/我的接收/MoviePilot/TV"
     _movie_save_path: str = "/我的接收/MoviePilot/Movie"
     _only_115: bool = True
-
     _exclude_subscribes: List[int] = []
 
     _nullbr_enabled: bool = False
@@ -82,19 +83,18 @@ class P115StrgmSub(_PluginBase):
     _hdhive_refresh_before: int = 86400
     _hdhive_query_mode: str = "playwright"
 
-    # 屏蔽开关（True=已屏蔽系统订阅，False=已恢复系统订阅窗口）
+    # 是否屏蔽系统订阅（True=已屏蔽系统订阅，False=已恢复系统订阅）
     _block_system_subscribe: bool = False
 
     _max_transfer_per_sync: int = 50
     _batch_size: int = 20
     _skip_other_season_dirs: bool = True
 
-    # UI新增：取消屏蔽后订阅站点（多选）
+    # 窗口配置：站点/延迟/窗口期
+    _unblock_site_ids: List[int] = []
     _unblock_site_names: List[str] = ["观众", "憨憨", "馒头"]
-    # UI新增：窗口期（小时，0=不进入窗口）
-    _unblock_window_hours: float = 2.0
-    # UI新增：触发条件1延迟（分钟，-1=禁用触发条件1）
-    _unblock_delay_minutes: int = 5
+    _unblock_delay_minutes: int = 5          # -1 禁用触发条件1
+    _system_subscribe_window_hours: float = 2.0  # 0 禁用窗口
 
     # 运行时对象
     _pansou_client: Optional[PanSouClient] = None
@@ -108,10 +108,25 @@ class P115StrgmSub(_PluginBase):
     _sync_handler: Optional[SyncHandler] = None
     _api_handler: Optional[ApiHandler] = None
 
-    # 最小触发间隔
     _MIN_INTERVAL_HOURS: int = 8
 
-    # ------------------------- 基础工具 -------------------------
+    # ------------------ 调度器 ------------------
+
+    def _ensure_toggle_scheduler(self):
+        if not self._toggle_scheduler:
+            self._toggle_scheduler = BackgroundScheduler(timezone=settings.TZ)
+            self._toggle_scheduler.start()
+
+    def _cancel_toggle_jobs(self):
+        if not self._toggle_scheduler:
+            return
+        for job_id in ["p115_unblock_job", "p115_reblock_job"]:
+            try:
+                self._toggle_scheduler.remove_job(job_id)
+            except Exception:
+                pass
+
+    # ------------------ cron间隔校验 ------------------
 
     @staticmethod
     def _cron_interval_ge_min_hours(cron_expr: str, min_hours: int) -> bool:
@@ -128,7 +143,6 @@ class P115StrgmSub(_PluginBase):
         fire_times: List[datetime.datetime] = []
         prev = None
         current = now
-
         for _ in range(12):
             nxt = trigger.get_next_fire_time(prev, current)
             if not nxt:
@@ -143,52 +157,123 @@ class P115StrgmSub(_PluginBase):
         min_delta = min(fire_times[i + 1] - fire_times[i] for i in range(len(fire_times) - 1))
         return min_delta >= datetime.timedelta(hours=min_hours)
 
-    def _ensure_toggle_scheduler(self):
-        if not self._toggle_scheduler:
-            self._toggle_scheduler = BackgroundScheduler(timezone=settings.TZ)
-            self._toggle_scheduler.start()
+    # ------------------ 站点解析 ------------------
 
-    def _cancel_toggle_jobs(self):
-        if not self._toggle_scheduler:
-            return
-        for job_id in ["p115_unblock_job", "p115_reblock_job"]:
-            try:
-                self._toggle_scheduler.remove_job(job_id)
-            except Exception:
-                pass
+    def _load_site_records(self) -> List[Dict[str, Any]]:
+        with SessionFactory() as db:
+            rows = db.execute(text("SELECT id, name, is_active FROM site")).fetchall()
+        out = []
+        for r in rows:
+            out.append({"id": int(r[0]), "name": str(r[1]), "is_active": bool(r[2])})
+        return out
+
+    def _resolve_site_ids(self, ids: Optional[List[int]] = None, names: Optional[List[str]] = None) -> List[int]:
+        ids = ids or []
+        names = names or []
+
+        site_records = self._load_site_records()
+        by_name = {s["name"]: s for s in site_records}
+        by_id = {s["id"]: s for s in site_records}
+
+        final_ids: List[int] = []
+
+        for sid in ids:
+            if sid in by_id:
+                final_ids.append(sid)
+            else:
+                logger.warning(f"站点ID不存在：id={sid}（将跳过）")
+
+        for nm in names:
+            rec = by_name.get(nm)
+            if not rec:
+                logger.warning(f"站点名称不存在：name={nm}（将跳过）")
+                continue
+            final_ids.append(int(rec["id"]))
+
+        seen = set()
+        uniq = []
+        for x in final_ids:
+            if x not in seen:
+                seen.add(x)
+                uniq.append(x)
+
+        mapped = []
+        for x in uniq:
+            rec = by_id.get(x, {})
+            mapped.append(f"{rec.get('name','?')}({x})")
+        logger.info(f"订阅站点解析结果：ids={uniq} | 映射={mapped}")
+        return uniq
+
+    def _ensure_115_site_id(self) -> int:
+        with SessionFactory() as db:
+            row = db.execute(text("SELECT id FROM site WHERE name=:n LIMIT 1"), {"n": "115网盘"}).fetchone()
+            if row and row[0] is not None:
+                return int(row[0])
+
+            existing = Site.get(db, -1)
+            if not existing:
+                db.execute(
+                    text(
+                        "INSERT INTO site (id, name, url, is_active, limit_interval, limit_count, limit_seconds, timeout) "
+                        "VALUES (:id, :name, :url, :is_active, :limit_interval ,:limit_count, :limit_seconds, :timeout)"
+                    ),
+                    {
+                        "id": -1,
+                        "name": "115网盘",
+                        "url": "https://115.com",
+                        "is_active": True,
+                        "limit_interval": 10000000,
+                        "limit_count": 1,
+                        "limit_seconds": 10000000,
+                        "timeout": 1
+                    }
+                )
+                db.commit()
+                logger.info("已插入站点记录：115网盘(id=-1)")
+            return -1
+
+    def _apply_sites_to_all_subscribes(self, site_ids: List[int], reason: str):
+        exclude_ids = set(self._exclude_subscribes or [])
+        with SessionFactory() as db:
+            subs = SubscribeOper(db=db).list() or []
+            updated = 0
+            excluded = 0
+            for s in subs:
+                if s.id in exclude_ids:
+                    excluded += 1
+                    continue
+                SubscribeOper(db=db).update(s.id, {"sites": site_ids})
+                updated += 1
+        logger.info(f"{reason}：已更新 {updated} 个订阅（跳过 {excluded} 个排除订阅）")
+
+    # ------------------ 禁用窗口判断 ------------------
+
+    def _window_disabled(self) -> bool:
+        # 站点空 / 窗口=0 / delay=-1 => 始终保持屏蔽，不安排任何进入已恢复状态任务
+        if not self._unblock_site_names:
+            return True
+        if float(self._system_subscribe_window_hours or 0) <= 0:
+            return True
+        if int(self._unblock_delay_minutes) < 0:
+            return True
+        return False
 
     def _window_enabled(self) -> bool:
-        """站点不选 或 窗口期<=0 => 不进入窗口，保持屏蔽"""
-        if not self._unblock_site_names:
-            return False
-        if float(self._unblock_window_hours or 0) <= 0:
-            return False
-        return True
+        return not self._window_disabled()
 
-    def _is_last_run_today(self, run_start: datetime.datetime) -> bool:
-        """判断是否当天最后一次触发"""
-        try:
-            tz = pytz.timezone(settings.TZ)
-            run_start = run_start.astimezone(tz)
-            trigger = CronTrigger.from_crontab(self._cron, timezone=tz)
-            nxt = trigger.get_next_fire_time(None, run_start + datetime.timedelta(seconds=1))
-            if not nxt:
-                return False
-            return nxt.date() != run_start.date()
-        except Exception as e:
-            logger.warning(f"判断是否当天最后一次触发失败：{e}，按 20:30 兜底")
-            return run_start.hour == 20 and run_start.minute == 30
+    # ------------------ 系统默认订阅站点：只在已恢复系统订阅时尝试 ------------------
 
-    # ------------------------- best-effort：尝试设置系统默认站点 -------------------------
-    # 说明：你现在数据库 systemconfig/userconfig 找不到默认订阅站点 key，
-    # 所以这个方法大概率不生效，但保留以防未来版本出现相关key。
-    def _best_effort_set_system_default_sites(self, site_ids: List[int]):
+    def _try_set_default_sites_for_unblocked(self, site_ids: List[int]):
+        """
+        只在“已恢复系统订阅”时尝试设置系统默认订阅站点为窗口站点。
+        若系统不存在对应key，会静默失败，不影响订阅 sites 已更新。
+        """
         try:
             from app.db.systemconfig_oper import SystemConfigOper
         except Exception:
             return
 
-        def build_oper(db):
+        def _build_oper(db):
             try:
                 return SystemConfigOper(db)
             except Exception:
@@ -206,7 +291,7 @@ class P115StrgmSub(_PluginBase):
         ]
 
         with SessionFactory() as db:
-            oper = build_oper(db)
+            oper = _build_oper(db)
             if not oper:
                 return
             get_fn = getattr(oper, "get", None) or getattr(oper, "get_by_key", None)
@@ -223,56 +308,65 @@ class P115StrgmSub(_PluginBase):
                     continue
                 try:
                     set_fn(k, site_ids)
-                    logger.info(f"系统默认订阅站点：已尝试写入 key={k} value={site_ids}")
+                    logger.info(f"已恢复系统订阅：已尝试同步默认订阅站点 key={k} value={site_ids}")
                     break
                 except Exception:
                     continue
 
-    # ------------------------- 两态：已屏蔽 / 已恢复 -------------------------
+    # ------------------ 两态切换（日志统一） ------------------
 
-    def _apply_blocked_state(self, reason: str):
-        """已屏蔽系统订阅：全量订阅 sites=仅115；取消窗口任务"""
+    def _enter_blocked(self, reason: str):
+        """
+        已屏蔽系统订阅：
+        - 全量订阅 sites=仅115
+        - 不再尝试设置屏蔽态默认站点=115（完全依赖事件兜底）
+        - 取消所有窗口任务
+        """
         self._ensure_toggle_scheduler()
         self._cancel_toggle_jobs()
         self._init_subscribe_handler()
 
-        site_ids = self._subscribe_handler.set_blocked_sites_only_115()  # 返回 [id]
-        self._best_effort_set_system_default_sites(site_ids)
-
+        self._subscribe_handler.set_blocked_sites_only_115()
         self._block_system_subscribe = True
         self.__update_config()
         logger.info(f"已屏蔽系统订阅（仅115网盘）：{reason}")
 
-    def _apply_unblocked_state(self, reason: str):
+    def _enter_unblocked(self, reason: str):
         """
-        已恢复系统订阅：全量订阅 sites=UI站点；并安排窗口到期切回屏蔽
-        若站点空/窗口=0：保持屏蔽并把开关打回 True
+        已恢复系统订阅：
+        - 全量订阅 sites=UI站点
+        - 尽力设置系统默认订阅站点=UI站点（若存在key）
+        - 从进入时刻计窗口，到期切回屏蔽
+        - 若窗口无效：保持屏蔽并回写开关
         """
         if not self._window_enabled():
-            # 配置无效：保持屏蔽
             self._block_system_subscribe = True
             self.__update_config()
-            self._apply_blocked_state(reason=f"{reason}（配置无效：站点空或窗口=0）")
+            self._enter_blocked(reason=f"{reason}（窗口禁用）")
             return
 
         self._ensure_toggle_scheduler()
         self._cancel_toggle_jobs()
         self._init_subscribe_handler()
 
-        site_names = self._unblock_site_names
-        site_ids = self._subscribe_handler.set_unblocked_sites(site_names)  # 返回 ids
-        self._best_effort_set_system_default_sites(site_ids)
+        site_ids = self._resolve_site_ids(ids=self._unblock_site_ids, names=self._unblock_site_names)
+        if not site_ids:
+            self._block_system_subscribe = True
+            self.__update_config()
+            self._enter_blocked(reason=f"{reason}（站点解析失败）")
+            return
+
+        self._apply_sites_to_all_subscribes(site_ids, reason="已恢复系统订阅：全量同步站点")
+        self._try_set_default_sites_for_unblocked(site_ids)
 
         self._block_system_subscribe = False
         self.__update_config()
-        logger.info(f"已恢复系统订阅：站点={site_names} 窗口期={self._unblock_window_hours}h（{reason}）")
+        logger.info(f"已恢复系统订阅：站点={self._unblock_site_names} 窗口期={self._system_subscribe_window_hours}h（{reason}）")
 
-        # 从现在开始计窗口期，到期切回屏蔽
         self._schedule_reblock_after_window()
 
     def _schedule_reblock_after_window(self):
-        """窗口到期切回已屏蔽系统订阅"""
-        hours = float(self._unblock_window_hours or 0)
+        hours = float(self._system_subscribe_window_hours or 0)
         if hours <= 0:
             return
 
@@ -281,7 +375,7 @@ class P115StrgmSub(_PluginBase):
         run_date = now + datetime.timedelta(hours=hours)
 
         self._toggle_scheduler.add_job(
-            func=lambda: self._apply_blocked_state(reason="窗口到期"),
+            func=lambda: self._enter_blocked(reason="窗口到期"),
             trigger="date",
             run_date=run_date,
             id="p115_reblock_job",
@@ -289,25 +383,22 @@ class P115StrgmSub(_PluginBase):
         )
         logger.info(f"已安排：{run_date} 切换为已屏蔽系统订阅（仅115网盘）")
 
-    def _schedule_unblock_after_delay(self):
-        """触发条件1：延迟进入已恢复系统订阅"""
+    def _schedule_unblock_after_delay(self, base_time: datetime.datetime):
         delay = int(self._unblock_delay_minutes)
         if delay < 0:
-            logger.info("触发条件1已禁用：unblock_delay_minutes<0，保持已屏蔽系统订阅（仅115网盘）")
             return
         if not self._window_enabled():
-            logger.info("触发条件1配置无效：站点空或窗口=0，保持已屏蔽系统订阅（仅115网盘）")
             return
 
         self._ensure_toggle_scheduler()
         self._cancel_toggle_jobs()
 
         tz = pytz.timezone(settings.TZ)
-        now = datetime.datetime.now(tz=tz)
-        run_date = now + datetime.timedelta(minutes=delay)
+        base_time = base_time.astimezone(tz)
+        run_date = base_time + datetime.timedelta(minutes=delay)
 
         self._toggle_scheduler.add_job(
-            func=lambda: self._apply_unblocked_state(reason="触发条件1：最后一次任务"),
+            func=lambda: self._enter_unblocked(reason="触发条件1：最后一次任务"),
             trigger="date",
             run_date=run_date,
             id="p115_unblock_job",
@@ -315,46 +406,82 @@ class P115StrgmSub(_PluginBase):
         )
         logger.info(f"已安排：{run_date} 切换为已恢复系统订阅（延迟={delay}min）")
 
-    # ------------------------- 事件兜底：SubscribeAdded -------------------------
+    # ------------------ 触发条件1：最后一次任务判断 ------------------
+
+    def _is_last_run_today(self, run_start: datetime.datetime) -> bool:
+        try:
+            tz = pytz.timezone(settings.TZ)
+            run_start = run_start.astimezone(tz)
+            trigger = CronTrigger.from_crontab(self._cron, timezone=tz)
+            nxt = trigger.get_next_fire_time(None, run_start + datetime.timedelta(seconds=1))
+            if not nxt:
+                return False
+            return nxt.date() != run_start.date()
+        except Exception as e:
+            logger.warning(f"判断是否当天最后一次触发失败：{e}，按 20:35 兜底")
+            return run_start.hour == 20 and run_start.minute == 35
+
+    # ------------------ 事件兜底：SubscribeAdded / SubscribeModified ------------------
+
+    def _get_subscribe_id_from_event(self, event: Event) -> Optional[int]:
+        if not event or not event.event_data:
+            return None
+        data = event.event_data or {}
+        subscribe_id = data.get("subscribe_id") or data.get("id")
+        if not subscribe_id and isinstance(data.get("subscribe"), dict):
+            subscribe_id = data["subscribe"].get("id")
+        try:
+            return int(subscribe_id) if subscribe_id is not None else None
+        except Exception:
+            return None
 
     @eventmanager.register(EventType.SubscribeAdded)
     def on_subscribe_added(self, event: Event):
-        """
-        新增订阅一旦出现：
-        - 若当前为已屏蔽系统订阅：立刻把该订阅 sites 改为仅115
-        - 若为已恢复系统订阅窗口：立刻把该订阅 sites 改为窗口站点（保持一致）
-        """
+        sid = self._get_subscribe_id_from_event(event)
+        if not sid:
+            return
         try:
-            if not event or not event.event_data:
-                return
-            data = event.event_data or {}
-
-            # 兼容各种结构取 subscribe_id
-            subscribe_id = data.get("subscribe_id") or data.get("id")
-            if not subscribe_id and isinstance(data.get("subscribe"), dict):
-                subscribe_id = data["subscribe"].get("id")
-            if not subscribe_id:
-                return
-
             self._init_subscribe_handler()
 
-            if self._block_system_subscribe is True:
-                # 已屏蔽：新订阅强制仅115
-                self._subscribe_handler.set_sites_for_subscribe_only_115(int(subscribe_id))
-                logger.info(f"已屏蔽系统订阅：新增订阅已强制仅115（subscribe_id={subscribe_id}）")
-            else:
-                # 已恢复：新订阅强制窗口站点（若配置无效则强制仅115）
-                if self._window_enabled():
-                    self._subscribe_handler.set_sites_for_subscribe_by_names(int(subscribe_id), self._unblock_site_names)
-                    logger.info(f"已恢复系统订阅：新增订阅已同步窗口站点（subscribe_id={subscribe_id}）")
+            if self._block_system_subscribe:
+                # 已屏蔽系统订阅：新增订阅一律拉回仅115
+                if hasattr(self._subscribe_handler, "set_sites_for_subscribe_only_115"):
+                    self._subscribe_handler.set_sites_for_subscribe_only_115(sid)
                 else:
-                    self._subscribe_handler.set_sites_for_subscribe_only_115(int(subscribe_id))
-                    logger.info(f"已屏蔽系统订阅：新增订阅已强制仅115（subscribe_id={subscribe_id}，因窗口配置无效）")
+                    site_id_115 = self._ensure_115_site_id()
+                    with SessionFactory() as db:
+                        SubscribeOper(db=db).update(sid, {"sites": [site_id_115]})
+                logger.info(f"已屏蔽系统订阅：新增订阅已拉回仅115（subscribe_id={sid}）")
+            else:
+                # 已恢复系统订阅：新增订阅同步窗口站点（保持一致）
+                if self._window_enabled() and hasattr(self._subscribe_handler, "set_sites_for_subscribe_by_names"):
+                    self._subscribe_handler.set_sites_for_subscribe_by_names(sid, self._unblock_site_names)
+                    logger.info(f"已恢复系统订阅：新增订阅已同步窗口站点（subscribe_id={sid}）")
 
         except Exception as e:
-            logger.error(f"SubscribeAdded 兜底处理失败：{e}")
+            logger.error(f"SubscribeAdded 兜底失败：{e}")
 
-    # ------------------------- HDHive cookie（原样） -------------------------
+    @eventmanager.register(EventType.SubscribeModified)
+    def on_subscribe_modified(self, event: Event):
+        sid = self._get_subscribe_id_from_event(event)
+        if not sid:
+            return
+        if not self._block_system_subscribe:
+            return
+        try:
+            self._init_subscribe_handler()
+            # 已屏蔽系统订阅：订阅改动一律拉回仅115
+            if hasattr(self._subscribe_handler, "set_sites_for_subscribe_only_115"):
+                self._subscribe_handler.set_sites_for_subscribe_only_115(sid)
+            else:
+                site_id_115 = self._ensure_115_site_id()
+                with SessionFactory() as db:
+                    SubscribeOper(db=db).update(sid, {"sites": [site_id_115]})
+            logger.info(f"已屏蔽系统订阅：订阅改动已拉回仅115（subscribe_id={sid}）")
+        except Exception as e:
+            logger.error(f"SubscribeModified 兜底失败：{e}")
+
+    # ------------------ HDHive cookie（原样保留） ------------------
 
     def _check_and_refresh_hdhive_cookie(self) -> Optional[str]:
         if not self._hdhive_auto_refresh:
@@ -388,27 +515,24 @@ class P115StrgmSub(_PluginBase):
             if token_info:
                 logger.info(
                     f"HDHive: 新 Cookie 信息 - 用户ID: {token_info['user_id']}, "
-                    f"过期时间: {token_info['exp_time'].strftime('%Y-%m-%d %H:%M:%S')}, "
-                    f"有效时间: {token_info['time_left'] / 3600:.1f} 小时"
+                    f"过期时间: {token_info['exp_time'].strftime('%Y-%m-%d %H:%M:%S')}"
                 )
-
             self._hdhive_cookie = new_cookie
             self.__update_config()
             logger.info("HDHive: Cookie 刷新成功并已保存到配置")
             return new_cookie
-        else:
-            logger.error("HDHive: Cookie 刷新失败")
-            return self._hdhive_cookie if self._hdhive_cookie else None
 
-    # ------------------------- init_plugin -------------------------
+        logger.error("HDHive: Cookie 刷新失败")
+        return self._hdhive_cookie if self._hdhive_cookie else None
+
+    # ------------------ init_plugin（触发条件2 + 配置立即生效） ------------------
 
     def init_plugin(self, config: dict = None):
-        """初始化插件"""
         self.stop_service()
         self._ensure_toggle_scheduler()
         download_so_file(Path(__file__).parent / "lib")
 
-        old_block_state = bool(self._block_system_subscribe)
+        old_block = bool(self._block_system_subscribe)
 
         if config:
             self._enabled = config.get("enabled", False)
@@ -425,19 +549,23 @@ class P115StrgmSub(_PluginBase):
             self._notify = config.get("notify", False)
             self._onlyonce = config.get("onlyonce", False)
             self._cookies = config.get("cookies", "")
+
             self._pansou_enabled = config.get("pansou_enabled", True)
             self._pansou_url = config.get("pansou_url", "https://so.252035.xyz/")
             self._pansou_username = config.get("pansou_username", "")
             self._pansou_password = config.get("pansou_password", "")
             self._pansou_auth_enabled = config.get("pansou_auth_enabled", False)
             self._pansou_channels = config.get("pansou_channels", "QukanMovie")
+
             self._save_path = config.get("save_path", "/我的接收/MoviePilot/TV")
             self._movie_save_path = config.get("movie_save_path", "/我的接收/MoviePilot/Movie")
             self._only_115 = config.get("only_115", True)
             self._exclude_subscribes = config.get("exclude_subscribes", []) or []
+
             self._nullbr_enabled = config.get("nullbr_enabled", False)
             self._nullbr_appid = config.get("nullbr_appid", "")
             self._nullbr_api_key = config.get("nullbr_api_key", "")
+
             self._hdhive_enabled = config.get("hdhive_enabled", False)
             self._hdhive_query_mode = config.get("hdhive_query_mode", "playwright")
             self._hdhive_username = config.get("hdhive_username", "")
@@ -445,26 +573,23 @@ class P115StrgmSub(_PluginBase):
             self._hdhive_cookie = config.get("hdhive_cookie", "")
             self._hdhive_auto_refresh = config.get("hdhive_auto_refresh", False)
             self._hdhive_refresh_before = int(config.get("hdhive_refresh_before", 86400) or 86400)
+
             self._max_transfer_per_sync = int(config.get("max_transfer_per_sync", 50) or 50)
             self._batch_size = int(config.get("batch_size", 20) or 20)
             self._skip_other_season_dirs = config.get("skip_other_season_dirs", True)
 
             # UI新增配置
+            self._unblock_site_ids = config.get("unblock_site_ids", []) or []
             raw_sites = config.get("unblock_site_names", self._unblock_site_names)
             if isinstance(raw_sites, str):
                 self._unblock_site_names = [x.strip() for x in raw_sites.split(",") if x.strip()]
             else:
                 self._unblock_site_names = raw_sites or []
 
-            try:
-                self._unblock_window_hours = float(config.get("unblock_window_hours", self._unblock_window_hours) or self._unblock_window_hours)
-            except Exception:
-                self._unblock_window_hours = 2.0
-
-            try:
-                self._unblock_delay_minutes = int(config.get("unblock_delay_minutes", self._unblock_delay_minutes))
-            except Exception:
-                self._unblock_delay_minutes = 5
+            self._unblock_delay_minutes = int(config.get("unblock_delay_minutes", self._unblock_delay_minutes))
+            self._system_subscribe_window_hours = float(
+                config.get("unblock_window_hours", config.get("system_subscribe_window_hours", self._system_subscribe_window_hours))
+            )
 
             # 开关
             self._block_system_subscribe = bool(config.get("block_system_subscribe", False))
@@ -473,31 +598,36 @@ class P115StrgmSub(_PluginBase):
         self._init_clients()
         self._init_handlers()
 
-        # ✅保存立即生效：不管开关是否变化，都立即按当前态应用配置（并重置窗口计时）
-        if self._block_system_subscribe is True:
-            self._apply_blocked_state(reason="保存立即生效")
+        # 触发条件2：True->False 且窗口无效 => 回写 True 并屏蔽
+        if (old_block is True) and (self._block_system_subscribe is False) and (not self._window_enabled()):
+            self._block_system_subscribe = True
+            self.__update_config()
+            self._enter_blocked(reason="触发条件2（窗口无效）")
+            return
+
+        # 配置立即生效：不管开关是否变化，立刻按当前态重写订阅 sites，且恢复态重置窗口计时
+        if self._block_system_subscribe:
+            self._enter_blocked(reason="配置应用")
         else:
-            self._apply_unblocked_state(reason="保存立即生效")
+            self._enter_unblocked(reason="配置应用")
 
         # 立即运行一次
         if self._enabled or self._onlyonce:
             if self._onlyonce:
                 self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-                logger.info("插件启动：立即运行一次")
                 self._scheduler.add_job(
                     func=self.sync_subscribes,
                     trigger='date',
                     run_date=datetime.datetime.now(tz=pytz.timezone(settings.TZ)) + datetime.timedelta(seconds=3)
                 )
                 if self._scheduler.get_jobs():
-                    self._scheduler.print_jobs()
                     self._scheduler.start()
 
             if self._onlyonce:
                 self._onlyonce = False
                 self.__update_config()
 
-    # ------------------------- init clients/handlers -------------------------
+    # ------------------ init clients/handlers ------------------
 
     def _init_clients(self):
         proxy = settings.PROXY
@@ -515,43 +645,9 @@ class P115StrgmSub(_PluginBase):
 
         if self._nullbr_enabled:
             if not self._nullbr_appid or not self._nullbr_api_key:
-                missing = []
-                if not self._nullbr_appid:
-                    missing.append("APP ID")
-                if not self._nullbr_api_key:
-                    missing.append("API Key")
-                logger.warning(f"Nullbr 已启用但缺少必要配置：{', '.join(missing)}")
                 self._nullbr_client = None
             else:
                 self._nullbr_client = NullbrClient(app_id=self._nullbr_appid, api_key=self._nullbr_api_key, proxy=proxy)
-                logger.info("Nullbr 客户端初始化成功")
-
-        if self._hdhive_enabled:
-            if self._hdhive_query_mode == "playwright":
-                if not self._hdhive_username or not self._hdhive_password:
-                    logger.warning("HDHive Playwright 模式需要配置用户名和密码")
-                    self._hdhive_client = None
-                else:
-                    logger.info("HDHive 配置已加载（Playwright 模式）")
-                    self._hdhive_client = None
-            else:
-                if not self._hdhive_cookie and not (self._hdhive_username and self._hdhive_password):
-                    logger.warning("HDHive API 模式需要配置 Cookie 或 用户名/密码")
-                    self._hdhive_client = None
-                else:
-                    effective_cookie = self._check_and_refresh_hdhive_cookie()
-                    if effective_cookie:
-                        try:
-                            from .lib.hdhive import create_client as create_hdhive_client
-                            logger.info(f"HDHive API 模式使用 PROXY: {proxy}")
-                            self._hdhive_client = create_hdhive_client(cookie=effective_cookie, proxy=proxy)
-                            logger.info("HDHive 客户端初始化成功（API 模式）")
-                        except Exception as e:
-                            logger.warning(f"HDHive 客户端初始化失败：{e}")
-                            self._hdhive_client = None
-                    else:
-                        logger.warning("HDHive API 模式缺少有效 Cookie")
-                        self._hdhive_client = None
 
         if self._cookies:
             self._p115_manager = P115ClientManager(cookies=self._cookies)
@@ -564,6 +660,8 @@ class P115StrgmSub(_PluginBase):
         )
 
     def _init_handlers(self):
+        self._init_subscribe_handler()
+
         self._search_handler = SearchHandler(
             pansou_client=self._pansou_client,
             nullbr_client=self._nullbr_client,
@@ -578,8 +676,6 @@ class P115StrgmSub(_PluginBase):
             only_115=self._only_115,
             pansou_channels=self._pansou_channels
         )
-
-        self._init_subscribe_handler()
 
         self._sync_handler = SyncHandler(
             p115_manager=self._p115_manager,
@@ -606,37 +702,7 @@ class P115StrgmSub(_PluginBase):
             save_data_func=self.save_data
         )
 
-    # ------------------------- MP接口/配置 -------------------------
-
-    def get_state(self) -> bool:
-        return self._enabled
-
-    @staticmethod
-    def get_command() -> List[Dict[str, Any]]:
-        return [{
-            "cmd": "/p115_sync",
-            "event": EventType.PluginAction,
-            "desc": "115网盘订阅追更",
-            "category": "订阅",
-            "data": {"action": "p115_sync"}
-        }]
-
-    def get_api(self) -> List[Dict[str, Any]]:
-        return [
-            {"path": "/sync_subscribes", "endpoint": self.sync_subscribes, "methods": ["GET"], "summary": "执行同步订阅追更"},
-            {"path": "/clear_history", "endpoint": self.api_clear_history, "methods": ["POST"], "summary": "清空历史记录"},
-        ]
-
-    def get_service(self) -> List[Dict[str, Any]]:
-        # 你原来 service 注册逻辑保持不动（略）
-        return super().get_service()
-
-    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
-        return UIConfig.get_form()
-
-    def get_page(self) -> Optional[List[dict]]:
-        history = self.get_data('history') or []
-        return UIConfig.get_page(history)
+    # ------------------ 配置写回 ------------------
 
     def __update_config(self):
         self.update_config({
@@ -657,23 +723,19 @@ class P115StrgmSub(_PluginBase):
             "nullbr_enabled": self._nullbr_enabled,
             "nullbr_appid": self._nullbr_appid,
             "nullbr_api_key": self._nullbr_api_key,
-            "hdhive_enabled": self._hdhive_enabled,
-            "hdhive_query_mode": self._hdhive_query_mode,
-            "hdhive_username": self._hdhive_username,
-            "hdhive_password": self._hdhive_password,
-            "hdhive_cookie": self._hdhive_cookie,
-            "hdhive_auto_refresh": self._hdhive_auto_refresh,
-            "hdhive_refresh_before": self._hdhive_refresh_before,
             "exclude_subscribes": self._exclude_subscribes,
             "block_system_subscribe": self._block_system_subscribe,
             "max_transfer_per_sync": self._max_transfer_per_sync,
             "batch_size": self._batch_size,
             "skip_other_season_dirs": self._skip_other_season_dirs,
-
+            "unblock_site_ids": self._unblock_site_ids,
             "unblock_site_names": self._unblock_site_names,
-            "unblock_window_hours": self._unblock_window_hours,
             "unblock_delay_minutes": self._unblock_delay_minutes,
+            "system_subscribe_window_hours": self._system_subscribe_window_hours,
+            "unblock_window_hours": self._system_subscribe_window_hours,
         })
+
+    # ------------------ stop ------------------
 
     def stop_service(self):
         try:
@@ -682,8 +744,8 @@ class P115StrgmSub(_PluginBase):
                 if self._scheduler.running:
                     self._scheduler.shutdown()
                 self._scheduler = None
-        except Exception as e:
-            logger.error(f"退出插件失败：{str(e)}")
+        except Exception:
+            pass
 
         try:
             if self._toggle_scheduler:
@@ -691,10 +753,10 @@ class P115StrgmSub(_PluginBase):
                 if self._toggle_scheduler.running:
                     self._toggle_scheduler.shutdown()
                 self._toggle_scheduler = None
-        except Exception as e:
-            logger.error(f"退出窗口调度器失败：{str(e)}")
+        except Exception:
+            pass
 
-    # ------------------------- 同步执行 -------------------------
+    # ------------------ 同步入口（触发条件1） ------------------
 
     def sync_subscribes(self):
         with lock:
@@ -708,19 +770,26 @@ class P115StrgmSub(_PluginBase):
                 logger.error(f"同步任务异常：{e}")
                 success = False
             finally:
-                # 触发条件1：最后一次任务成功后，按 delay 进入窗口（若 delay<0/窗口无效则保持屏蔽）
                 if success and self._is_last_run_today(run_start):
-                    if self._unblock_delay_minutes < 0 or (not self._window_enabled()):
-                        self._apply_blocked_state(reason="触发条件1：禁用或配置无效")
+                    # delay<0 或窗口无效 => 保持屏蔽
+                    if int(self._unblock_delay_minutes) < 0 or (not self._window_enabled()):
+                        self._enter_blocked(reason="触发条件1")
                     else:
-                        self._schedule_unblock_after_delay()
+                        self._schedule_unblock_after_delay(datetime.datetime.now(tz=pytz.timezone(settings.TZ)))
 
-    def _do_sync(self) -> bool:
-        # 你原始 _do_sync 很长，建议保留原实现；此处不展开
-        return True
+    # ------------------ 你原版的 get_api/remote_sync 等可以继续沿用 ------------------
+
+    def api_search(self, keyword: str, apikey: str) -> dict:
+        return self._api_handler.search(keyword, apikey)
+
+    def api_transfer(self, share_url: str, save_path: str, apikey: str) -> dict:
+        return self._api_handler.transfer(share_url, save_path, apikey)
 
     def api_clear_history(self, apikey: str) -> dict:
         return self._api_handler.clear_history(apikey)
+
+    def api_list_directories(self, path: str = "/", apikey: str = "") -> dict:
+        return self._api_handler.list_directories(path, apikey)
 
     @eventmanager.register(EventType.PluginAction)
     def remote_sync(self, event: Event):
@@ -734,8 +803,8 @@ class P115StrgmSub(_PluginBase):
         self.post_message(
             mtype=NotificationType.Plugin,
             channel=event_data.get("channel"),
-            title="【115网盘订阅追更】开始执行",
-            text="已收到远程命令，正在执行订阅追更任务...",
+            title="【115网盘订阅增强】开始执行",
+            text="已收到远程命令，正在执行追更任务...",
             userid=event_data.get("user")
         )
 
@@ -744,7 +813,7 @@ class P115StrgmSub(_PluginBase):
         self.post_message(
             mtype=NotificationType.Plugin,
             channel=event_data.get("channel"),
-            title="【115网盘订阅追更】执行完成",
-            text="远程触发的订阅追更任务已完成。",
+            title="【115网盘订阅增强】执行完成",
+            text="远程触发的追更任务已完成。",
             userid=event_data.get("user")
         )
