@@ -115,7 +115,7 @@ class UIConfig:
                         ]
                     },
 
-                    # ✅新增：取消屏蔽后的站点选择/窗口期/延迟分钟（完全保留你上一版结构，仅优化提示语）
+                    # ✅取消屏蔽后的站点选择/窗口期/延迟分钟（1.2.4 语义同步）
                     {
                         'component': 'VRow',
                         'content': [
@@ -132,7 +132,7 @@ class UIConfig:
                                         'chips': True,
                                         'clearable': True,
                                         'closable-chips': True,
-                                        'hint': '为空表示不进入窗口期：保持屏蔽（仅115网盘）',
+                                        'hint': '为空表示禁用窗口：始终保持屏蔽（仅115网盘）',
                                         'persistent-hint': True
                                     }
                                 }]
@@ -147,7 +147,7 @@ class UIConfig:
                                         'label': '取消屏蔽窗口期（小时）',
                                         'type': 'number',
                                         'placeholder': '2',
-                                        'hint': '设为0表示不进入窗口期：保持屏蔽（仅115网盘）',
+                                        'hint': '设为0表示禁用窗口：始终保持屏蔽（仅115网盘）',
                                         'persistent-hint': True,
                                         'clearable': True
                                     }
@@ -163,7 +163,7 @@ class UIConfig:
                                         'label': '每天最后一次任务后延迟（分钟）',
                                         'type': 'number',
                                         'placeholder': '5',
-                                        'hint': '设为-1表示禁用触发条件1：保持屏蔽（仅115网盘）',
+                                        'hint': '设为-1表示禁用触发条件1，并且窗口机制也不会进入（始终保持屏蔽）',
                                         'persistent-hint': True,
                                         'clearable': True
                                     }
@@ -333,8 +333,10 @@ class UIConfig:
             "only_115": True,
             "cron": "30 */8 * * *",
 
+            "unblock_site_ids": [],
             "unblock_site_names": ["观众", "憨憨", "馒头"],
             "unblock_window_hours": 2,
+            "system_subscribe_window_hours": 2,
             "unblock_delay_minutes": 5,
 
             "save_path": "/我的接收/MoviePilot/TV",
@@ -359,7 +361,8 @@ class UIConfig:
             "exclude_subscribes": [],
             "block_system_subscribe": False,
             "max_transfer_per_sync": 50,
-            "batch_size": 20
+            "batch_size": 20,
+            "skip_other_season_dirs": True
         }
 
         return form_schema, default_config
@@ -367,8 +370,10 @@ class UIConfig:
     @staticmethod
     def get_page(history: List[dict]) -> List[dict]:
         """
-        保留你之前那套完整统计页（卡片+折叠面板）
+        详情页内容与 1.2.4 无强耦合，保持原样即可
         """
+        # 你原有的 get_page 很长，这里不做任何改动，继续沿用你现有版本即可。
+        # 如果你希望我也按 1.2.4 统一“文案/按钮标题”，你告诉我我再一起改。
         from datetime import datetime
 
         history = history or []
