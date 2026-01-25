@@ -1,8 +1,8 @@
 """
 订阅处理模块
-负责订阅状态检查、完成、站点更新等逻辑
+负责订阅状态检查、完成、站点更新等逻辑（v1.2.5）
 """
-from typing import List, Callable, Dict, Any, Tuple
+from typing import List, Callable, Dict, Any
 from sqlalchemy import text
 
 from app.core.metainfo import MetaInfo
@@ -38,20 +38,14 @@ class SubscribeHandler:
     ):
         """
         检查订阅是否完成，如果完成则调用官方接口
-
-        :param subscribe: 订阅对象
-        :param mediainfo: 媒体信息
-        :param success_episodes: 本次成功转存的集数列表（电影为[1]）
         """
         try:
-            # 1) 更新 note 字段（记录已下载集数，与系统订阅检查兼容）
             current_note = subscribe.note or []
             if mediainfo.type == MediaType.TV:
                 new_note = list(set(current_note).union(set(success_episodes)))
             else:
                 new_note = list(set(current_note).union({1}))
 
-            # 2) 更新缺失集数
             current_lack = subscribe.lack_episode or 0
             total_episode = subscribe.total_episode or 0
             start_episode = subscribe.start_episode or 1
@@ -64,7 +58,6 @@ class SubscribeHandler:
             else:
                 new_lack = max(0, current_lack - len(success_episodes))
 
-            # 3) 一次性更新 note 和 lack_episode
             update_data = {}
             if new_note != current_note:
                 update_data["note"] = new_note
@@ -76,7 +69,6 @@ class SubscribeHandler:
             if update_data:
                 SubscribeOper().update(subscribe.id, update_data)
 
-            # 4) 若已完成：调用系统完成订阅
             if new_lack == 0:
                 logger.info(f"订阅 {subscribe.name} 已完成，准备移至历史记录")
 
@@ -170,11 +162,6 @@ class SubscribeHandler:
 
     @staticmethod
     def _guess_sites_storage_format_from_rows(rows: List[Any]) -> str:
-        """
-        订阅 sites 字段可能是：
-        - json/list（psycopg2 会返回 python list）
-        - 逗号字符串（返回 str）
-        """
         for v in rows:
             if isinstance(v, str):
                 return "str"
@@ -184,9 +171,6 @@ class SubscribeHandler:
 
     @staticmethod
     def _guess_sites_storage_format_for_subscribe(db, subscribe_id: int) -> str:
-        """
-        单条订阅推断 sites 存储格式。
-        """
         row = db.execute(
             text("SELECT sites FROM subscribe WHERE id=:id LIMIT 1"),
             {"id": int(subscribe_id)}
@@ -201,9 +185,6 @@ class SubscribeHandler:
         return "list"
 
     def apply_subscribe_sites_by_site_names(self, site_names: List[str], action_desc: str = "") -> List[int]:
-        """
-        全量订阅写入：根据站点名解析 id -> 写入所有订阅 sites
-        """
         action_desc = action_desc or f"设置订阅sites={site_names}"
         exclude_ids = set(self._exclude_subscribes or [])
         site_names_norm = self._normalize_site_names(site_names)
@@ -219,7 +200,6 @@ class SubscribeHandler:
                 if nm in mapping:
                     site_ids.append(mapping[nm])
 
-            # 去重保序
             seen = set()
             site_ids_uniq = []
             for x in site_ids:
@@ -236,7 +216,6 @@ class SubscribeHandler:
                 return []
 
             subscribes = SubscribeOper(db=db).list() or []
-            # 判断格式（随便取几个订阅的 sites）
             sample_sites = []
             for s in subscribes[:5]:
                 try:
@@ -268,7 +247,6 @@ class SubscribeHandler:
             site_id_115 = self._ensure_115_site_id(db)
 
             subscribes = SubscribeOper(db=db).list() or []
-            # 判断格式
             sample_sites = []
             for s in subscribes[:5]:
                 try:
@@ -290,11 +268,12 @@ class SubscribeHandler:
             logger.info(f"已屏蔽系统订阅：全量订阅仅115网盘（已更新 {updated} 个，跳过 {excluded} 个排除订阅）")
             return [site_id_115]
 
-    # ------------------ v1.2.4 新增：单条订阅站点写入（事件兜底用） ------------------
+    # ------------------ 单条订阅站点写入（事件兜底用） ------------------
 
     def set_sites_for_subscribe_only_115(self, subscribe_id: int) -> List[int]:
         """
-        单条订阅写入：仅115（用于 SubscribeAdded / SubscribeModified 兜底）
+        单条订阅写入：仅115
+        - v1.2.5：仅用于 SubscribeAdded（新订阅兜底）
         """
         with SessionFactory() as db:
             site_id_115 = self._ensure_115_site_id(db)
@@ -306,7 +285,8 @@ class SubscribeHandler:
 
     def set_sites_for_subscribe_by_names(self, subscribe_id: int, site_names: List[str]) -> List[int]:
         """
-        单条订阅写入：窗口站点（用于已恢复系统订阅状态下新增订阅保持一致）
+        单条订阅写入：窗口站点
+        - 用于“已恢复系统订阅”状态下，新订阅保持一致
         """
         site_names_norm = self._normalize_site_names(site_names)
         if not site_names_norm:
