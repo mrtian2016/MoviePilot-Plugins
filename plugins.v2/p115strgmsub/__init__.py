@@ -55,7 +55,7 @@ class P115StrgmSub(_PluginBase):
     # 配置属性
     _enabled: bool = False
     _onlyonce: bool = False
-    _cron: str = "30 */8 * * *"
+    _cron: str = "30 2,10,18 * * *"
     _notify: bool = False
 
     _cookies: str = ""
