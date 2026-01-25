@@ -92,7 +92,7 @@ class P115StrgmSub(_PluginBase):
 
     # 窗口配置：站点/延迟/窗口期
     _unblock_site_ids: List[int] = []
-    _unblock_site_names: List[str] = ["观众", "憨憨", "馒头"]
+    _unblock_site_names: List[str] = []
     _unblock_delay_minutes: int = 5          # -1 禁用触发条件1（并视为禁用窗口）
     _system_subscribe_window_hours: float = 1.0  # 0 禁用窗口
 
