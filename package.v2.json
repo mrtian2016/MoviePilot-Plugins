@@ -4,11 +4,12 @@
     "release": true,
     "description": "结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集。",
     "labels": "订阅,115网盘",
-    "version": "1.3.2",
+    "version": "1.3.3",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
     "author": "mrtian2016",
     "level": 1,
     "history": {
+      "v1.3.3": "1. 支持HDHive OpenAPI查询资源；",
       "v1.3.2": "1. 修复HDHive Playwright模式下无法获取媒体信息的问题；",
       "v1.3.1": "1. 统一 HDHive 查询方式为 Playwright 模式，移除 API 模式及相关配置；",
       "v1.3.0": "1. 更新依赖",

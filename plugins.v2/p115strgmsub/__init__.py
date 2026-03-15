@@ -44,7 +44,7 @@ class P115StrgmSub(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
     # 插件版本
-    plugin_version = "1.3.2"
+    plugin_version = "1.3.3"
     # 插件作者
     plugin_author = "mrtian2016"
     # 作者主页
@@ -87,7 +87,9 @@ class P115StrgmSub(_PluginBase):
     _hdhive_cookie: str = ""
     _hdhive_auto_refresh: bool = False
     _hdhive_refresh_before: int = 86400
-    _hdhive_query_mode: str = "playwright"
+    _hdhive_query_mode: str = "api"
+    _hdhive_api_key: str = ""
+    _hdhive_auto_unlock: bool = False
 
     # 是否屏蔽系统订阅（True=已屏蔽系统订阅，False=已恢复系统订阅）
     _block_system_subscribe: bool = False
@@ -580,7 +582,9 @@ class P115StrgmSub(_PluginBase):
             self._nullbr_api_key = config.get("nullbr_api_key", "")
 
             self._hdhive_enabled = config.get("hdhive_enabled", False)
-            self._hdhive_query_mode = config.get("hdhive_query_mode", "playwright")
+            self._hdhive_query_mode = config.get("hdhive_query_mode", "api")
+            self._hdhive_api_key = config.get("hdhive_api_key", "")
+            self._hdhive_auto_unlock = config.get("hdhive_auto_unlock", False)
             self._hdhive_username = config.get("hdhive_username", "")
             self._hdhive_password = config.get("hdhive_password", "")
             self._hdhive_cookie = config.get("hdhive_cookie", "")
@@ -669,13 +673,17 @@ class P115StrgmSub(_PluginBase):
                 self._nullbr_client = NullbrClient(app_id=self._nullbr_appid, api_key=self._nullbr_api_key, proxy=proxy)
                 logger.info("Nullbr 客户端初始化成功")
 
-        # HDHive 客户端初始化（仅 Playwright 模式，搜索时动态创建客户端）
+        # HDHive 客户端初始化（仅 Playwright 模式搜索时动态创建客户端，API 模式直接在 search_hdhive 中请求）
         if self._hdhive_enabled:
-            if not self._hdhive_username or not self._hdhive_password:
-                logger.warning("HDHive 已启用但未配置用户名和密码，将无法使用 HDHive 查询功能")
+            # Playwright 测试用户名密码，API 测试 api_key
+            if self._hdhive_query_mode == "playwright" and (not self._hdhive_username or not self._hdhive_password):
+                logger.warning("HDHive (Playwright 模式) 已启用但未配置用户名和密码，将无法使用 HDHive 查询功能")
+                self._hdhive_client = None
+            elif self._hdhive_query_mode == "api" and not self._hdhive_api_key:
+                logger.warning("HDHive (API 模式) 已启用但未配置 API Key，将无法使用 HDHive 查询功能")
                 self._hdhive_client = None
             else:
-                logger.info("HDHive 配置已加载（Playwright 模式，搜索时动态创建客户端）")
+                logger.info(f"HDHive 配置已加载（模式：{self._hdhive_query_mode}）")
                 self._hdhive_client = None
 
         if self._cookies:
@@ -698,6 +706,9 @@ class P115StrgmSub(_PluginBase):
             pansou_enabled=self._pansou_enabled,
             nullbr_enabled=self._nullbr_enabled,
             hdhive_enabled=self._hdhive_enabled,
+            hdhive_query_mode=self._hdhive_query_mode,
+            hdhive_api_key=self._hdhive_api_key,
+            hdhive_auto_unlock=self._hdhive_auto_unlock,
             hdhive_username=self._hdhive_username,
             hdhive_password=self._hdhive_password,
             hdhive_cookie=self._hdhive_cookie,
@@ -754,6 +765,8 @@ class P115StrgmSub(_PluginBase):
             # HDHive 配置
             "hdhive_enabled": self._hdhive_enabled,
             "hdhive_query_mode": self._hdhive_query_mode,
+            "hdhive_api_key": self._hdhive_api_key,
+            "hdhive_auto_unlock": self._hdhive_auto_unlock,
             "hdhive_username": self._hdhive_username,
             "hdhive_password": self._hdhive_password,
             "hdhive_cookie": self._hdhive_cookie,

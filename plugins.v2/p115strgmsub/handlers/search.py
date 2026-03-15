@@ -26,6 +26,9 @@ class SearchHandler:
         hdhive_username: str = "",
         hdhive_password: str = "",
         hdhive_cookie: str = "",
+        hdhive_query_mode: str = "api",
+        hdhive_api_key: str = "",
+        hdhive_auto_unlock: bool = False,
         only_115: bool = True,
         pansou_channels: str = ""
     ):
@@ -41,6 +44,9 @@ class SearchHandler:
         :param hdhive_username: HDHive 用户名
         :param hdhive_password: HDHive 密码
         :param hdhive_cookie: HDHive Cookie
+        :param hdhive_query_mode: HDHive 查询模式
+        :param hdhive_api_key: HDHive API Key
+        :param hdhive_auto_unlock: 是否自动解锁 HDHive 资源
         :param only_115: 是否只搜索115网盘资源
         :param pansou_channels: PanSou 搜索频道
         """
@@ -53,6 +59,9 @@ class SearchHandler:
         self._hdhive_username = hdhive_username
         self._hdhive_password = hdhive_password
         self._hdhive_cookie = hdhive_cookie
+        self._hdhive_query_mode = hdhive_query_mode
+        self._hdhive_api_key = hdhive_api_key
+        self._hdhive_auto_unlock = hdhive_auto_unlock
         self._only_115 = only_115
         self._pansou_channels = pansou_channels
 
@@ -68,9 +77,11 @@ class SearchHandler:
         if self._nullbr_enabled and self._nullbr_client:
             sources.append("nullbr")
 
-        # HDHive（仅支持 Playwright 模式，需要用户名和密码）
+        # HDHive
         if self._hdhive_enabled:
-            if self._hdhive_username and self._hdhive_password:
+            if self._hdhive_query_mode == "playwright" and self._hdhive_username and self._hdhive_password:
+                sources.append("hdhive")
+            elif self._hdhive_query_mode == "api" and self._hdhive_api_key:
                 sources.append("hdhive")
 
         # PanSou
@@ -289,10 +300,12 @@ class SearchHandler:
             logger.warning(f"{mediainfo.title} 缺少 TMDB ID，无法使用 HDHive 查询")
             return []
 
-        hdhive_media_type = HDHiveMediaType.MOVIE if media_type == MediaType.MOVIE else HDHiveMediaType.TV
+        hdhive_media_type = "movie" if media_type == MediaType.MOVIE else "tv"
 
-        # 强制使用 Playwright 模式
-        return self._search_hdhive_playwright(mediainfo, hdhive_media_type)
+        if self._hdhive_query_mode == "playwright":
+            return self._search_hdhive_playwright(mediainfo, HDHiveMediaType.MOVIE if media_type == MediaType.MOVIE else HDHiveMediaType.TV)
+        else:
+            return self._search_hdhive_api(mediainfo, hdhive_media_type)
 
     def _search_hdhive_playwright(self, mediainfo: MediaInfo, hdhive_media_type) -> List[Dict]:
         """
@@ -362,50 +375,107 @@ class SearchHandler:
             logger.error(f"HDHive (Playwright) 查询失败: {e}")
             return []
 
-    def _search_hdhive_api(self, mediainfo: MediaInfo, hdhive_media_type) -> List[Dict]:
+    def _search_hdhive_api(self, mediainfo: MediaInfo, hdhive_media_type: str) -> List[Dict]:
         """
-        使用 API 模式（Cookie 直接请求）查询 HDHive 资源
-        需要有效的 Cookie
+        使用 API 模式查询 HDHive 资源
+        需要有效的 API Key
         """
-        if not self._hdhive_client:
-            logger.warning("HDHive API 模式需要有效的 Cookie")
+        if not self._hdhive_api_key:
+            logger.warning("HDHive API 模式需要有效的 API Key")
             return []
 
         try:
+            import requests
             logger.info(f"使用 HDHive (API) 查询: {mediainfo.title} (TMDB ID: {mediainfo.tmdb_id})")
 
-            # 获取媒体信息
-            with self._hdhive_client as client:
-                media = client.get_media_by_tmdb_id(mediainfo.tmdb_id, hdhive_media_type)
-                if not media:
-                    logger.info(f"HDHive (API) 未找到媒体: {mediainfo.title}")
-                    return []
+            headers = {
+                "X-API-Key": self._hdhive_api_key,
+                "Content-Type": "application/json"
+            }
 
-                # 获取资源列表
-                resources_result = client.get_resources(media.slug, hdhive_media_type, media_id=media.id)
-                if not resources_result or not resources_result.success:
-                    logger.info(f"HDHive (API) 获取资源列表失败: {mediainfo.title}")
-                    return []
+            # 1. 获取资源列表
+            url = f"https://hdhive.com/api/open/resources/{hdhive_media_type}/{mediainfo.tmdb_id}"
+            proxies = {"http": settings.PROXY, "https": settings.PROXY} if settings.PROXY else None
 
-                # 过滤免费的 115 资源
-                free_115_resources = []
-                for res in resources_result.resources:
-                    if hasattr(res, 'website') and res.website.value == '115' and res.is_free:
-                        # 获取分享链接
-                        share_result = client.get_share_url(res.slug)
-                        if share_result and share_result.url:
+            res = requests.get(url, headers=headers, proxies=proxies, timeout=15)
+            logger.info(f"HDHive (API) GET {url} 返回状态: {res.status_code}")
+            logger.debug(f"HDHive (API) 响应内容: {res.text}")
+            
+            if res.status_code != 200:
+                logger.info(f"HDHive (API) 获取资源失败, status: {res.status_code}")
+                return []
+
+            data = res.json()
+            if not data.get("success") or not data.get("data"):
+                logger.info(f"HDHive (API) 未找到资源: {mediainfo.title}, 返回数据: {data}")
+                return []
+
+            resources = data.get("data", [])
+            
+            free_115_resources = []
+            resources = [ resource for resource in resources if resource.get("pan_type") == "115" ]
+            logger.info(f"HDHive (API) 找到 {len(resources)} 个115网盘资源，开始过滤...")
+            for resource in resources:
+                # 过滤出可能是115网盘的且免费的资源 (0或者null)，或者如果开启了自动解锁，则都可以尝试
+                
+                # # 1. 前置过滤：根据 website 属性判断是否是 115 网盘
+                # website = resource.get("website")
+                # if isinstance(website, dict):
+                #     website_value = str(website.get("value", ""))
+                #     if website_value and website_value != "115":
+                #         logger.debug(f"HDHive (API) 资源 {resource.get('title')} 的 website_value 不是 115 ({website_value})，跳过")
+                #         continue
+                # elif isinstance(website, str):
+                #     if website and website != "115":
+                #         logger.debug(f"HDHive (API) 资源 {resource.get('title')} 的 website 不是 115 ({website})，跳过")
+                #         continue
+                
+                # 2. 免费策略/积分判断
+                unlock_points = resource.get("unlock_points")
+                is_free = unlock_points is None or unlock_points == 0 or resource.get("is_unlocked")
+                
+                logger.debug(f"HDHive (API) 处理资源: title='{resource.get('title')}', slug='{resource.get('slug')}', unlock_points={unlock_points}, is_unlocked={resource.get('is_unlocked')}, is_free={is_free}")
+
+                if is_free or self._hdhive_auto_unlock:
+                    slug = resource.get("slug")
+                    if not slug:
+                        logger.debug(f"HDHive (API) 资源缺少 slug，跳过: {resource}")
+                        continue
+
+                    # 尝试解锁
+                    unlock_url = "https://hdhive.com/api/open/resources/unlock"
+                    logger.debug(f"HDHive (API) 尝试解锁资源: {slug}")
+                    unlock_res = requests.post(unlock_url, json={"slug": slug}, headers=headers, proxies=proxies, timeout=15)
+                    
+                    logger.debug(f"HDHive (API) 解锁 {slug} 返回状态: {unlock_res.status_code}, 内容: {unlock_res.text}")
+                    
+                    if unlock_res.status_code == 200:
+                        unlock_data = unlock_res.json()
+                        if unlock_data.get("success") and unlock_data.get("data"):
+                            
+                            share_url = unlock_data["data"].get("full_url", "")
+                            logger.info(f"HDHive (API) 解锁数据: {unlock_data}")
+                            logger.info(f"HDHive (API) 成功解锁, 分享链接: {share_url}")
+                            # 验证是否为 115 链接
                             free_115_resources.append({
-                                "url": share_result.url,
-                                "title": res.title,
-                                "update_time": ""
+                                "url": share_url,
+                                "title": resource.get("title", ""),
+                                "update_time": resource.get("created_at", "")
                             })
-
-                if free_115_resources:
-                    logger.info(f"HDHive (API) 找到 {len(free_115_resources)} 个免费 115 资源")
-                    return free_115_resources
+                         
+                        else:
+                            logger.error(f"HDHive (API) 解锁失败，返回数据异常或非成功: {unlock_data}")
+                    else:
+                        logger.error(f"HDHive (API) 解锁请求失败，状态码: {unlock_res.status_code}")
                 else:
-                    logger.info(f"HDHive (API) 未找到免费 115 资源")
-                    return []
+                    logger.debug(f"HDHive (API) 资源 {resource.get('title')} 非免费且未开启自动解锁，已跳过")
+
+            if free_115_resources:
+                logger.info(f"HDHive (API) 找到 {len(free_115_resources)} 个免费 115 资源")
+                return free_115_resources
+            else:
+                logger.info(f"HDHive (API) 未找到免费 115 资源")
+                return []
 
         except Exception as e:
             logger.error(f"HDHive (API) 查询失败: {e}")

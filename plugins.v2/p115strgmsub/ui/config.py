@@ -263,7 +263,7 @@ class UIConfig:
                         'content': [{
                             'component': 'VCol',
                             'props': {'cols': 12},
-                            'content': [{'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': 'HDHive资源查询：基于TMDB ID查询115网盘资源，使用 Playwright 浏览器模拟获取分享链接（需安装 playwright 和 chromium）'}}]
+                            'content': [{'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': 'HDHive资源查询：基于TMDB ID查询115网盘资源。API模式使用API Key查询；Playwright模式使用浏览器模拟获取分享链接（需安装 playwright 和 chromium）'}}]
                         }]
                     },
                     # HDHive 配置
@@ -273,9 +273,22 @@ class UIConfig:
                              {'component': 'VCol', 'props': {'cols': 12, 'md': 4},
                              'content': [{'component': 'VSwitch', 'props': {'model': 'hdhive_enabled', 'label': '启用 HDHive'}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 4},
-                             'content': [{'component': 'VTextField', 'props': {'model': 'hdhive_username', 'label': 'HDHive 用户名', 'placeholder': 'HDHive 用户名'}}]},
+                             'content': [{'component': 'VSelect', 'props': {'model': 'hdhive_query_mode', 'label': '查询模式',
+                                 'items': [{'title': 'API 模式', 'value': 'api'}, {'title': 'Playwright 模式', 'value': 'playwright'}]}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 4},
-                             'content': [{'component': 'VTextField', 'props': {"clearable": True, 'model': 'hdhive_password', 'label': 'HDHive 密码', 'type': 'password', 'placeholder': 'HDHive 密码'}}]}
+                             'content': [{'component': 'VTextField', 'props': {"clearable": True, 'model': 'hdhive_api_key', 'label': 'HDHive API Key', 'type': 'password', 'placeholder': 'API 模式下需要'}}]}
+                        ]
+                    },
+                    # HDHive 账号密码配置
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4},
+                             'content': [{'component': 'VTextField', 'props': {'model': 'hdhive_username', 'label': 'HDHive 用户名', 'placeholder': 'Playwright 模式下需要'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 5},
+                             'content': [{'component': 'VTextField', 'props': {"clearable": True, 'model': 'hdhive_password', 'label': 'HDHive 密码', 'type': 'password', 'placeholder': 'Playwright 模式下需要'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3},
+                             'content': [{'component': 'VSwitch', 'props': {'model': 'hdhive_auto_unlock', 'label': '自动解锁资源', 'hint': '关闭时仅查询免费资源'}}]}
                         ]
                     },
                     # 风控防护说明
@@ -339,7 +352,9 @@ class UIConfig:
             "nullbr_appid": "",
             "nullbr_api_key": "",
             "hdhive_enabled": False,
-            "hdhive_query_mode": "playwright",
+            "hdhive_query_mode": "api",
+            "hdhive_api_key": "",
+            "hdhive_auto_unlock": False,
             "hdhive_username": "",
             "hdhive_password": "",
             "hdhive_cookie": "",
