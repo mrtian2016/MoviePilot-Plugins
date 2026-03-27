@@ -213,6 +213,9 @@ class PanSouClient:
                 # 清理 title 中的 HTML 标签
                 title = re.sub(r'<[^>]+>', '', title)
 
+                if keyword not in title:
+                    continue
+
                 links = item.get("links", [])
                 update_time = item.get("datetime", "")
 
