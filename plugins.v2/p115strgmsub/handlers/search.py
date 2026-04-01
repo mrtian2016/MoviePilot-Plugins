@@ -182,6 +182,68 @@ class SearchHandler:
 
         results = search_results.get("results", {}) if search_results and not search_results.get("error") else {}
         return results.get("115网盘", [])
+    def _filter_pansou_results_by_title(
+        self,
+        results: List[Dict],
+        mediainfo: MediaInfo,
+        media_type: MediaType,
+        season: Optional[int] = None
+    ) -> List[Dict]:
+        """
+        过滤 PanSou 搜索结果，确保标题、年份、季号匹配
+
+        :param results: PanSou 搜索结果
+        :param mediainfo: 媒体信息
+        :param media_type: 媒体类型
+        :param season: 季号（电视剧）
+        :return: 过滤后的结果
+        """
+        if not results or not mediainfo:
+            return results
+
+        filtered = []
+        for result in results:
+            title = result.get("title", "") or result.get("name", "") or ""
+            url = result.get("url", "") or ""
+
+            # 合并标题和 URL 进行检查
+            combined_text = f"{title} {url}".lower()
+
+            # 检查标题是否包含媒体标题的关键字（移除空格后匹配）
+            title_keywords = mediainfo.title.lower().replace(" ", "")
+            if title_keywords not in combined_text.replace(" ", ""):
+                logger.debug(f"PanSou 结果标题不匹配: {title} (期望: {mediainfo.title})，跳过")
+                continue
+
+            # 电影必须检查年份
+            if media_type == MediaType.MOVIE and mediainfo.year:
+                year_str = str(mediainfo.year)
+                if year_str not in combined_text:
+                    logger.debug(f"PanSou 电影结果年份不匹配: {title} (期望年份: {year_str})，跳过")
+                    continue
+
+            # 电视剧必须检查季号
+            if media_type == MediaType.TV and season:
+                season_patterns = [
+                    f"s{season}",
+                    f"s{season:02d}",
+                    f"第{season}季",
+                    f"第{season}辑",
+                    f"{season}季",
+                ]
+                if not any(p in combined_text for p in season_patterns):
+                    logger.debug(f"PanSou 电视剧结果季号不匹配: {title} (期望: S{season})，跳过")
+                    continue
+
+            filtered.append(result)
+            logger.debug(f"PanSou 结果通过过滤: {title}")
+
+        if len(filtered) < len(results):
+            logger.info(f"PanSou 搜索过滤: {len(filtered)}/{len(results)} 条结果通过标题/年份/季号校验")
+
+        return filtered
+
+
 
     def _search_nullbr(
         self,
@@ -246,7 +308,12 @@ class SearchHandler:
             results = self._pansou_search(keyword)
             if results:
                 logger.info(f"PanSou 关键词 '{keyword}' 搜索到 {len(results)} 个结果")
-                return results
+                # 添加标题+年份过滤
+                filtered = self._filter_pansou_results_by_title(
+                    results, mediainfo, MediaType.MOVIE
+                )
+                if filtered:
+                    return filtered
             else:
                 logger.info(f"PanSou 关键词 '{keyword}' 无结果，尝试下一个降级关键词")
 
@@ -280,7 +347,12 @@ class SearchHandler:
             results = self._pansou_search(keyword)
             if results:
                 logger.info(f"PanSou 关键词 '{keyword}' 搜索到 {len(results)} 个结果")
-                return results
+                # 添加标题+年份+季号过滤
+                filtered = self._filter_pansou_results_by_title(
+                    results, mediainfo, MediaType.TV, season
+                )
+                if filtered:
+                    return filtered
             else:
                 logger.info(f"PanSou 关键词 '{keyword}' 无结果，尝试下一个降级关键词")
 
