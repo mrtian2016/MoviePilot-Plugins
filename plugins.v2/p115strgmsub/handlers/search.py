@@ -182,6 +182,15 @@ class SearchHandler:
 
         results = search_results.get("results", {}) if search_results and not search_results.get("error") else {}
         return results.get("115网盘", [])
+    def _normalize(self, text: str) -> str:
+        """
+        归一化文本：移除所有非字母数字字符，只保留字母和数字
+
+        :param text: 待处理文本
+        :return: 归一化后的文本
+        """
+        return "".join(ch for ch in (text or "").lower() if ch.isalnum())
+
     def _filter_pansou_results_by_title(
         self,
         results: List[Dict],
@@ -201,17 +210,19 @@ class SearchHandler:
         if not results or not mediainfo:
             return results
 
+        # 归一化目标标题
+        normalized_title = self._normalize(mediainfo.title)
+
         filtered = []
         for result in results:
             title = result.get("title", "") or result.get("name", "") or ""
             url = result.get("url", "") or ""
 
-            # 合并标题和 URL 进行检查
-            combined_text = f"{title} {url}".lower()
+            # 合并标题和 URL 进行检查（归一化后匹配）
+            combined_text = self._normalize(f"{title} {url}")
 
-            # 检查标题是否包含媒体标题的关键字（移除空格后匹配）
-            title_keywords = mediainfo.title.lower().replace(" ", "")
-            if title_keywords not in combined_text.replace(" ", ""):
+            # 检查标题是否包含媒体标题的关键字（归一化后匹配）
+            if normalized_title not in combined_text:
                 logger.debug(f"PanSou 结果标题不匹配: {title} (期望: {mediainfo.title})，跳过")
                 continue
 
