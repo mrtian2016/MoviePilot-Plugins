@@ -237,26 +237,26 @@ class UIConfig:
                         ]
                     },
                     # Nullbr说明
-                    {
-                        'component': 'VRow',
-                        'content': [{
-                            'component': 'VCol',
-                            'props': {'cols': 12},
-                            'content': [{'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': 'Nullbr 资源查询：基于TMDB ID精准查询115网盘资源，准确度更高'}}]
-                        }]
-                    },
+                    # {
+                    #     'component': 'VRow',
+                    #     'content': [{
+                    #         'component': 'VCol',
+                    #         'props': {'cols': 12},
+                    #         'content': [{'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': 'Nullbr 资源查询：基于TMDB ID精准查询115网盘资源，准确度更高'}}]
+                    #     }]
+                    # },
                     # Nullbr 配置
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4},
-                             'content': [{'component': 'VSwitch', 'props': {'model': 'nullbr_enabled', 'label': '启用 Nullbr'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4},
-                             'content': [{'component': 'VTextField', 'props': {'model': 'nullbr_appid', 'label': 'Nullbr APP ID', 'placeholder': '请输入 APP ID'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4},
-                             'content': [{'component': 'VTextField', 'props': {"clearable": True, 'model': 'nullbr_api_key', 'label': 'Nullbr API Key', 'type': 'password', 'placeholder': '请输入 API Key'}}]}
-                        ]
-                    },
+                    # {
+                    #     'component': 'VRow',
+                    #     'content': [
+                    #         {'component': 'VCol', 'props': {'cols': 12, 'md': 4},
+                    #          'content': [{'component': 'VSwitch', 'props': {'model': 'nullbr_enabled', 'label': '启用 Nullbr'}}]},
+                    #         {'component': 'VCol', 'props': {'cols': 12, 'md': 4},
+                    #          'content': [{'component': 'VTextField', 'props': {'model': 'nullbr_appid', 'label': 'Nullbr APP ID', 'placeholder': '请输入 APP ID'}}]},
+                    #         {'component': 'VCol', 'props': {'cols': 12, 'md': 4},
+                    #          'content': [{'component': 'VTextField', 'props': {"clearable": True, 'model': 'nullbr_api_key', 'label': 'Nullbr API Key', 'type': 'password', 'placeholder': '请输入 API Key'}}]}
+                    #     ]
+                    # },
                     # HDHive说明
                     {
                         'component': 'VRow',
@@ -287,6 +287,20 @@ class UIConfig:
                              'content': [{'component': 'VTextField', 'props': {'model': 'hdhive_username', 'label': 'HDHive 用户名', 'placeholder': 'Playwright 模式下需要'}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 5},
                              'content': [{'component': 'VTextField', 'props': {"clearable": True, 'model': 'hdhive_password', 'label': 'HDHive 密码', 'type': 'password', 'placeholder': 'Playwright 模式下需要'}}]}
+                        ]
+                    },
+                    # HDHive 签到配置
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {'component': 'VCol', 'props': {'cols': 6, 'md': 4},
+                             'content': [{'component': 'VSwitch', 'props': {'model': 'hdhive_checkin_enabled', 'label': '每日自动签到', 'hint': '每天随机6~10点自动签到获取积分', 'persistent-hint': True}}]},
+                            {'component': 'VCol', 'props': {'cols': 6, 'md': 4},
+                             'content': [{'component': 'VSwitch', 'props': {'model': 'hdhive_checkin_gambler', 'label': '赌狗模式签到', 'hint': '高风险高回报（-3~+30积分）', 'persistent-hint': True}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4},
+                             'content': [{'component': 'VSelect', 'props': {'model': 'hdhive_checkin_mode', 'label': '签到模式',
+                                 'items': [{'title': 'API 模式', 'value': 'api'}, {'title': 'Playwright 模式', 'value': 'playwright'}],
+                                 'hint': 'API需Cookie，Playwright需账号密码', 'persistent-hint': True}}]}
                         ]
                     },
                     # HDHive 积分配置
@@ -367,10 +381,13 @@ class UIConfig:
             "hdhive_auto_unlock": False,
             "hdhive_max_unlock_points": 50,
             "hdhive_max_points_per_sub": 20,
+            "hdhive_checkin_enabled": False,
+            "hdhive_checkin_gambler": False,
+            "hdhive_checkin_mode": "api",
             "hdhive_username": "",
             "hdhive_password": "",
             "hdhive_cookie": "",
-            "hdhive_auto_refresh": False,
+            "hdhive_auto_refresh": True,
             "hdhive_refresh_before": 86400,
             "exclude_subscribes": [],
             "block_system_subscribe": False,

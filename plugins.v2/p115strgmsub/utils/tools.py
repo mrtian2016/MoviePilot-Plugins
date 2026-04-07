@@ -450,6 +450,178 @@ def refresh_hdhive_cookie_with_playwright(
         return None
 
 
+def hdhive_checkin_api(
+    cookie: str = "",
+    api_key: str = "",
+    checkin_type: str = "normal",
+    base_url: str = "https://hdhive.com",
+) -> Dict[str, Any]:
+    """
+    通过 API 方式执行 HDHive 签到
+
+    :param cookie: Cookie 字符串 (格式: "token=xxx; csrf_access_token=xxx")
+    :param api_key: HDHive API Key
+    :param checkin_type: 签到类型 "normal"(每日签到) 或 "gamble"(赌狗签到)
+    :param base_url: HDHive 站点地址
+    :return: {"success": bool, "message": str, "checkin_type": str, "points": int|None}
+    """
+    import re
+    import requests
+
+    result = {"success": False, "message": "", "checkin_type": checkin_type, "points": None}
+
+    if not cookie and not api_key:
+        result["message"] = "未配置 Cookie 或 API Key"
+        return result
+
+    proxy = settings.PROXY
+    headers = {
+        'User-Agent': getattr(settings, 'USER_AGENT', 'Mozilla/5.0'),
+        'Accept': 'application/json, text/plain, */*',
+        'Origin': base_url,
+    }
+    cookies = {}
+
+    if api_key:
+        headers['X-API-Key'] = api_key
+        headers['Referer'] = f"{base_url}/"
+        checkin_url = f"{base_url}/api/open/checkin"
+        json_data = {"is_gambler": checkin_type == "gamble"}
+    else:
+        checkin_url = f"{base_url}/api/customer/user/checkin"
+        json_data = None
+        # 解析 cookie
+        for item in cookie.split(';'):
+            if '=' in item:
+                k, v = item.strip().split('=', 1)
+                cookies[k] = v
+
+        token = cookies.get('token')
+        csrf_token = cookies.get('csrf_access_token')
+
+        if not token:
+            result["message"] = "Cookie 中缺少 token"
+            return result
+
+        # 解析 user_id 用于 Referer
+        user_id = None
+        try:
+            payload = decode_jwt_payload(token)
+            if payload:
+                user_id = payload.get('sub')
+        except Exception:
+            pass
+
+        referer = f"{base_url}/user/{user_id}" if user_id else f"{base_url}/"
+        headers['Referer'] = referer
+        headers['Authorization'] = f'Bearer {token}'
+        if csrf_token:
+            headers['x-csrf-token'] = csrf_token
+
+    try:
+        resp = requests.post(
+            url=checkin_url,
+            headers=headers,
+            cookies=cookies,
+            json=json_data,
+            proxies=proxy if isinstance(proxy, dict) else ({"http": proxy, "https": proxy} if proxy else None),
+            timeout=30,
+            verify=False
+        )
+
+        if resp is None:
+            result["message"] = "签到请求无响应"
+            return result
+
+        try:
+            data = resp.json()
+        except (json.JSONDecodeError, ValueError):
+            result["message"] = f"签到响应解析失败 (HTTP {resp.status_code})"
+            return result
+
+        message = data.get('message', '未知')
+
+        if data.get('success'):
+            result["success"] = True
+            result["message"] = message
+        elif "已经签到" in message or "签到过" in message:
+            result["success"] = True
+            result["message"] = message
+        else:
+            result["message"] = message
+
+        # 解析积分
+        points_match = re.search(r'获得\s*(\d+)\s*积分', message)
+        if points_match:
+            result["points"] = int(points_match.group(1))
+
+        return result
+
+    except Exception as e:
+        logger.error(f"HDHive API 签到异常: {e}")
+        result["message"] = f"签到异常: {e}"
+        return result
+
+
+def hdhive_checkin_playwright(
+    username: str,
+    password: str,
+    cookie: str = "",
+    checkin_type: str = "normal",
+    base_url: str = "https://hdhive.com",
+) -> Dict[str, Any]:
+    """
+    通过 Playwright (hdhive 库) 模拟点击执行 HDHive 签到
+
+    :param username: HDHive 用户名
+    :param password: HDHive 密码
+    :param cookie: 可选的 Cookie (用于复用登录态)
+    :param checkin_type: 签到类型 "normal"(每日签到) 或 "gamble"(赌狗签到)
+    :param base_url: HDHive 站点地址
+    :return: {"success": bool, "message": str, "checkin_type": str, "points": int|None}
+    """
+    import asyncio
+
+    result = {"success": False, "message": "", "checkin_type": checkin_type, "points": None}
+
+    if not username or not password:
+        result["message"] = "未配置用户名或密码"
+        return result
+
+    try:
+        from ..lib.hdhive import create_async_client, CheckinType
+    except ImportError as e:
+        result["message"] = f"hdhive 库未安装: {e}"
+        logger.error(f"HDHive Playwright 签到: hdhive 库导入失败: {e}")
+        return result
+
+    ct = CheckinType.GAMBLE if checkin_type == "gamble" else CheckinType.NORMAL
+    proxy = settings.PROXY
+
+    async def _do_checkin():
+        async with create_async_client(
+            username=username,
+            password=password,
+            cookie=cookie or None,
+            base_url=base_url,
+            proxy=proxy,
+            headless=True,
+            browser_type="chromium",
+        ) as client:
+            return await client.checkin(ct)
+
+    try:
+        checkin_result = asyncio.run(_do_checkin())
+        result["success"] = checkin_result.success
+        result["message"] = checkin_result.message
+        result["points"] = checkin_result.points
+        return result
+    except Exception as e:
+        logger.error(f"HDHive Playwright 签到异常: {e}")
+        result["message"] = f"签到异常: {e}"
+        return result
+
+
 def convert_nullbr_to_pansou_format(nullbr_resources: List[Dict]) -> List[Dict]:
     """
     将 Nullbr 资源格式转换为统一的资源格式

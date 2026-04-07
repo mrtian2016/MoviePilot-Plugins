@@ -3,6 +3,7 @@
 结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集
 """
 import datetime
+import random
 from pathlib import Path
 from threading import Lock
 from typing import Optional, Any, List, Dict, Tuple
@@ -29,6 +30,8 @@ from .utils import (
     get_hdhive_token_info,
     check_hdhive_cookie_valid,
     refresh_hdhive_cookie_with_playwright,
+    hdhive_checkin_api,
+    hdhive_checkin_playwright,
 )
 
 lock = Lock()
@@ -44,7 +47,7 @@ class P115StrgmSub(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
     # 插件版本
-    plugin_version = "1.3.7"
+    plugin_version = "1.3.8"
     # 插件作者
     plugin_author = "mrtian2016"
     # 作者主页
@@ -92,6 +95,12 @@ class P115StrgmSub(_PluginBase):
     _hdhive_auto_unlock: bool = False
     _hdhive_max_unlock_points: int = 50
     _hdhive_max_points_per_sub: int = 20
+    
+    # HDHive 签到配置
+    _hdhive_checkin_enabled: bool = False
+    _hdhive_checkin_mode: str = "api"       # "api" 或 "playwright"
+    _hdhive_checkin_type: str = "normal"    # "normal" 或 "gamble"
+    _hdhive_checkin_cron: str = "0 8 * * *"
 
     # 是否屏蔽系统订阅（True=已屏蔽系统订阅，False=已恢复系统订阅）
     _block_system_subscribe: bool = False
@@ -542,6 +551,79 @@ class P115StrgmSub(_PluginBase):
         logger.error("HDHive: Cookie 刷新失败")
         return self._hdhive_cookie if self._hdhive_cookie else None
 
+    # ------------------ HDHive 签到 ------------------
+
+    # ------------------ HDHive 签到 ------------------
+
+    def _do_hdhive_checkin(self):
+        """执行 HDHive 签到"""
+        if not self._hdhive_checkin_enabled:
+            return
+
+        mode = self._hdhive_checkin_mode
+        checkin_type = self._hdhive_checkin_type
+        type_label = "赌狗签到" if checkin_type == "gamble" else "每日签到"
+        mode_label = "Playwright" if mode == "playwright" else "API"
+
+        logger.info(f"HDHive 签到: 开始执行 [{mode_label}] [{type_label}]")
+
+        try:
+            if mode == "playwright":
+                if not self._hdhive_username or not self._hdhive_password:
+                    logger.warning("HDHive 签到: Playwright 模式未配置用户名/密码")
+                    return
+                result = hdhive_checkin_playwright(
+                    username=self._hdhive_username,
+                    password=self._hdhive_password,
+                    cookie=self._hdhive_cookie,
+                    checkin_type=checkin_type,
+                )
+            else:
+                # API 模式：优先使用 API Key，否则使用 Cookie
+                if self._hdhive_api_key:
+                    result = hdhive_checkin_api(
+                        api_key=self._hdhive_api_key,
+                        checkin_type=checkin_type,
+                    )
+                else:
+                    cookie = self._check_and_refresh_hdhive_cookie()
+                    if not cookie:
+                        logger.warning("HDHive 签到: API 模式无可用 API Key 或 Cookie")
+                        return
+                    result = hdhive_checkin_api(
+                        cookie=cookie,
+                        checkin_type=checkin_type,
+                    )
+
+            # 日志
+            if result["success"]:
+                points_info = f"，积分: +{result['points']}" if result.get("points") else ""
+                multiplier_info = f"（{result['multiplier']}x翻倍）" if result.get("multiplier") and result["multiplier"] > 1 else ""
+                logger.info(f"HDHive 签到成功: {result['message']}{points_info}{multiplier_info}")
+            else:
+                logger.warning(f"HDHive 签到失败: {result['message']}")
+
+            # 签到通知始终发送（不受 self._notify 控制）
+            status = "✅ 成功" if result.get("success") else "❌ 失败"
+            text_parts = [f"模式: {mode_label}", f"结果: {result.get('message', '未知')}"]
+            if result.get("points"):
+                text_parts.append(f"积分: +{result['points']}")
+            if result.get("multiplier") and result["multiplier"] > 1:
+                text_parts.append(f"倍率: {result['multiplier']}x（Premium）")
+            self.post_message(
+                mtype=NotificationType.Plugin,
+                title=f"【HDHive {type_label}】{status}",
+                text="\n".join(text_parts),
+            )
+
+        except Exception as e:
+            logger.error(f"HDHive 签到异常: {e}", exc_info=True)
+            self.post_message(
+                mtype=NotificationType.Plugin,
+                title=f"【HDHive {type_label}】❌ 异常",
+                text=f"签到执行异常: {e}",
+            )
+
     # ------------------ init_plugin ------------------
 
     def init_plugin(self, config: dict = None):
@@ -594,6 +676,12 @@ class P115StrgmSub(_PluginBase):
             self._hdhive_cookie = config.get("hdhive_cookie", "")
             self._hdhive_auto_refresh = config.get("hdhive_auto_refresh", False)
             self._hdhive_refresh_before = int(config.get("hdhive_refresh_before", 86400) or 86400)
+            self._hdhive_checkin_enabled = config.get("hdhive_checkin_enabled", False)
+            self._hdhive_checkin_mode = config.get("hdhive_checkin_mode", "api")
+            # UI 使用 hdhive_checkin_gambler (bool)，转换为内部 hdhive_checkin_type (string)
+            self._hdhive_checkin_type = "gamble" if config.get("hdhive_checkin_gambler", False) else "normal"
+            # 签到时间每次初始化随机生成（6~9点随机分钟），避免固定时间触发风控
+            self._hdhive_checkin_cron = f"{random.randint(0, 59)} {random.randint(6, 9)} * * *"
 
             self._max_transfer_per_sync = int(config.get("max_transfer_per_sync", 50) or 50)
             self._batch_size = int(config.get("batch_size", 20) or 20)
@@ -782,6 +870,12 @@ class P115StrgmSub(_PluginBase):
             "hdhive_cookie": self._hdhive_cookie,
             "hdhive_auto_refresh": self._hdhive_auto_refresh,
             "hdhive_refresh_before": self._hdhive_refresh_before,
+            # HDHive 签到
+            "hdhive_checkin_enabled": self._hdhive_checkin_enabled,
+            "hdhive_checkin_mode": self._hdhive_checkin_mode,
+            "hdhive_checkin_type": self._hdhive_checkin_type,
+            "hdhive_checkin_gambler": self._hdhive_checkin_type == "gamble",
+            "hdhive_checkin_cron": self._hdhive_checkin_cron,
             # 其他配置
             "exclude_subscribes": self._exclude_subscribes,
             "block_system_subscribe": self._block_system_subscribe,
@@ -864,25 +958,50 @@ class P115StrgmSub(_PluginBase):
         if not self._enabled:
             return []
 
+        services = []
+
         if self._cron and self._cron_interval_ge_min_hours(self._cron, self._MIN_INTERVAL_HOURS):
             try:
-                return [{
+                services.append({
                     "id": "P115StrgmSub",
                     "name": "115网盘订阅追更服务",
                     "trigger": CronTrigger.from_crontab(self._cron),
                     "func": self.sync_subscribes,
                     "kwargs": {}
-                }]
+                })
             except Exception as e:
                 logger.warning(f"Cron 表达式无效：{self._cron}，将回退 interval=8h。错误：{e}")
+                services.append({
+                    "id": "P115StrgmSub",
+                    "name": "115网盘订阅追更服务",
+                    "trigger": "interval",
+                    "func": self.sync_subscribes,
+                    "kwargs": {"hours": 8}
+                })
+        else:
+            services.append({
+                "id": "P115StrgmSub",
+                "name": "115网盘订阅追更服务",
+                "trigger": "interval",
+                "func": self.sync_subscribes,
+                "kwargs": {"hours": 8}
+            })
 
-        return [{
-            "id": "P115StrgmSub",
-            "name": "115网盘订阅追更服务",
-            "trigger": "interval",
-            "func": self.sync_subscribes,
-            "kwargs": {"hours": 8}
-        }]
+        # HDHive 签到服务
+        if self._hdhive_checkin_enabled and self._hdhive_checkin_cron:
+            try:
+                services.append({
+                    "id": "P115StrgmSub_HDHiveCheckin",
+                    "name": "HDHive 签到服务",
+                    "trigger": CronTrigger.from_crontab(self._hdhive_checkin_cron),
+                    "func": self._do_hdhive_checkin,
+                    "kwargs": {}
+                })
+                logger.info(f"HDHive 签到服务已注册，Cron: {self._hdhive_checkin_cron}")
+            except Exception as e:
+                logger.warning(f"HDHive 签到 Cron 表达式无效：{self._hdhive_checkin_cron}，错误：{e}")
+
+        return services
 
     # ======================================================================
     # 必备：_do_sync（返回 bool）

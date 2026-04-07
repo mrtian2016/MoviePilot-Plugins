@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # 监控目录
-WATCH_DIR="/Users/tianjy/projects/MoviePilot-Plugins-p115sub/plugins.v2/p115strgmsub"
+WATCH_DIR="./plugins.v2/p115strgmsub"
 # 目标目录
-TARGET_DIR="/Users/tianjy/projects/MoviePilot/app/plugins/p115strgmsub"
+TARGET_DIR="../MoviePilot/app/plugins/p115strgmsub"
 
 # 同步函数
 sync_files() {
@@ -21,20 +21,28 @@ echo "目标目录: $TARGET_DIR"
 echo "按 Ctrl+C 停止监控"
 echo "-----------------------------------"
 
-# 使用 fswatch 监控文件变化 (macOS)
+# 使用 fswatch (macOS) 或 inotifywait (Linux) 监控文件变化
 if command -v fswatch &> /dev/null; then
     fswatch -o "$WATCH_DIR" | while read; do
         sync_files
     done
+elif command -v inotifywait &> /dev/null; then
+    inotifywait -m -r -e modify,create,delete,move "$WATCH_DIR" --format '%w%f' | while read; do
+        sync_files
+    done
 else
-    echo "未找到 fswatch，尝试使用轮询方式..."
-    echo "建议安装 fswatch: brew install fswatch"
+    echo "未找到文件监控工具，尝试使用轮询方式..."
+    echo "建议安装: macOS: brew install fswatch | Ubuntu: sudo apt install inotify-tools"
     echo ""
 
     # 备用方案：轮询检测
     LAST_HASH=""
     while true; do
-        CURRENT_HASH=$(find "$WATCH_DIR" -type f -exec md5 -q {} \; 2>/dev/null | sort | md5)
+        if command -v md5sum &> /dev/null; then
+            CURRENT_HASH=$(find "$WATCH_DIR" -type f -exec md5sum {} \; 2>/dev/null | sort | md5sum | awk '{print $1}')
+        else
+            CURRENT_HASH=$(find "$WATCH_DIR" -type f -exec md5 -q {} \; 2>/dev/null | sort | md5)
+        fi
         if [ "$CURRENT_HASH" != "$LAST_HASH" ] && [ -n "$LAST_HASH" ]; then
             sync_files
         fi
