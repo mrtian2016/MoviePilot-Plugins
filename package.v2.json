@@ -4,11 +4,12 @@
     "release": true,
     "description": "结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集。",
     "labels": "订阅,115网盘",
-    "version": "1.4.1",
+    "version": "1.4.2",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
     "author": "mrtian2016",
     "level": 1,
     "history": {
+      "v1.4.2": "1. 优化PanSou搜索关键词过滤逻辑；",
       "v1.4.1": "1. 更新版本号；",
       "v1.4.0": "1. 优化HDHive用户会话管理;",
       "v1.3.9": "1. 修复bug；",

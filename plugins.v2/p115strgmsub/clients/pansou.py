@@ -3,6 +3,7 @@ PanSou 网盘搜索客户端
 用于搜索各类网盘资源
 """
 import re
+import unicodedata
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
@@ -29,6 +30,8 @@ class PanSouClient:
         "magnet": "磁力链接",
         "ed2k": "电驴链接"
     }
+
+    _PUNCT_GAP_RE = re.compile(r"[\s\u3000:：·•.,，。!！?？（）【】\[\]/／\\＼-]+")
 
     def __init__(
             self,
@@ -60,6 +63,59 @@ class PanSouClient:
             self._proxies = proxy if isinstance(proxy, dict) else {"http": proxy, "https": proxy}
         else:
             self._proxies = None
+
+    @staticmethod
+    def _normalize_for_match(text: str) -> str:
+        """
+        统一空白、NFKC 与常见全角标点，便于做「关键词是否出现在标题中」的判断
+        """
+        if not text:
+            return ""
+        t = unicodedata.normalize("NFKC", text)
+        for old, new in (
+            ("：", ":"),
+            ("，", ","),
+            ("（", "("),
+            ("）", ")"),
+            ("【", "["),
+            ("】", "]"),
+            ("！", "!"),
+            ("？", "?"),
+            ("–", "-"),
+            ("—", "-"),
+            ("…", "..."),
+        ):
+            t = t.replace(old, new)
+        t = re.sub(r"[\s\u3000]+", " ", t).strip()
+        return t.casefold()
+
+    @classmethod
+    def _compact_for_match(cls, text: str) -> str:
+        """
+        在规范化基础上去掉标点与空白，使「复仇者联盟3：无限战争」与「复仇者联盟3: 无限战争」可比
+        """
+        base = cls._normalize_for_match(text)
+        return cls._PUNCT_GAP_RE.sub("", base)
+
+    @classmethod
+    def _title_matches_search_key(cls, key: str, title: str) -> bool:
+        """
+        判断标题是否包含搜索关键词：先原串子串，再规范化子串，再紧凑子串（短关键词不用紧凑路径以免误伤）
+        """
+        if not key:
+            return True
+        t = title or ""
+        if key in t:
+            return True
+        nk = cls._normalize_for_match(key)
+        nt = cls._normalize_for_match(t)
+        if nk and nk in nt:
+            return True
+        ck = cls._compact_for_match(key)
+        ct = cls._compact_for_match(t)
+        if len(ck) < 2:
+            return False
+        return ck in ct
 
     def _get_token(self) -> Optional[str]:
         """获取或刷新 Token"""
@@ -213,7 +269,7 @@ class PanSouClient:
                 # 清理 title 中的 HTML 标签
                 title = re.sub(r'<[^>]+>', '', title)
 
-                if keyword not in title:
+                if not self._title_matches_search_key(keyword, title):
                     continue
 
                 links = item.get("links", [])
