@@ -1,2 +1,2 @@
-p115client==0.0.8.5.1.1
+p115client>=0.0.9.6,<0.0.10
 playwright-stealth==2.0.2
