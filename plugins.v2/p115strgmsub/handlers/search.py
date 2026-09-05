@@ -1,6 +1,6 @@
 """
 搜索处理模块
-负责所有搜索相关逻辑：HDHive、Nullbr、PanSou
+负责所有搜索相关逻辑：HDHive、Nullbr、PanSou、KDocs
 """
 from typing import Optional, List, Dict, Any
 
@@ -32,7 +32,9 @@ class SearchHandler:
         hdhive_max_points_per_sub: int = 20,
         only_115: bool = True,
         pansou_channels: str = "",
-        search_source_order: Optional[List[str]] = None
+        search_source_order: Optional[List[str]] = None,
+        kdocs_client=None,
+        kdocs_enabled: bool = False
     ):
         """
         初始化搜索处理器
@@ -52,6 +54,8 @@ class SearchHandler:
         :param pansou_channels: PanSou 搜索频道
         :param search_source_order: 自定义搜索源优先级列表，如 ["pansou", "hdhive"]；
                                     为空时使用默认优先级 Nullbr > HDHive > PanSou
+        :param kdocs_client: KDocs 在线文档库客户端实例
+        :param kdocs_enabled: 是否启用 KDocs 在线文档库
         """
         self._pansou_client = pansou_client
         self._nullbr_client = nullbr_client
@@ -74,6 +78,8 @@ class SearchHandler:
         self._only_115 = only_115
         self._pansou_channels = pansou_channels
         self._search_source_order = search_source_order or []
+        self._kdocs_client = kdocs_client
+        self._kdocs_enabled = kdocs_enabled
 
     def get_enabled_sources(self) -> List[str]:
         """
@@ -103,6 +109,10 @@ class SearchHandler:
         # PanSou
         if self._pansou_enabled and self._pansou_client:
             available.append("pansou")
+
+        # KDocs
+        if self._kdocs_enabled and self._kdocs_client and self._kdocs_client.is_ready:
+            available.append("kdocs")
 
         # 应用用户自定义优先级
         if self._search_source_order:
@@ -154,7 +164,7 @@ class SearchHandler:
         """
         使用指定的单一搜索源查询资源
 
-        :param source: 搜索源名称 ("nullbr", "hdhive", "pansou")
+        :param source: 搜索源名称 ("nullbr", "hdhive", "pansou", "kdocs")
         :param mediainfo: 媒体信息
         :param media_type: 媒体类型
         :param season: 季号（电视剧时使用）
@@ -169,6 +179,8 @@ class SearchHandler:
                 return self._search_pansou_movie(mediainfo)
             else:
                 return self._search_pansou_tv(mediainfo, season)
+        elif source == "kdocs":
+            return self._search_kdocs(mediainfo)
         else:
             logger.warning(f"未知的搜索源: {source}")
             return []
@@ -515,6 +527,32 @@ class SearchHandler:
 
         except Exception as e:
             logger.error(f"HDHive (API) 查询失败: {e}")
+            return []
+
+    def _search_kdocs(
+        self,
+        mediainfo: MediaInfo
+    ) -> List[Dict]:
+        """
+        使用 KDocs 在线文档库搜索资源
+
+        :param mediainfo: 媒体信息
+        :return: 115网盘资源列表（统一格式）
+        """
+        if not self._kdocs_client or not self._kdocs_client.is_ready:
+            logger.warning("KDocs: 客户端未初始化或未配置 Token，跳过查询")
+            return []
+
+        try:
+            logger.info(f"使用 KDocs 在线文档库查询: {mediainfo.title}")
+            results = self._kdocs_client.search(mediainfo.title, only_115=self._only_115)
+            if results:
+                logger.info(f"KDocs 找到 {len(results)} 个资源")
+            else:
+                logger.info("KDocs 未找到资源")
+            return results
+        except Exception as e:
+            logger.error(f"KDocs 查询失败: {e}")
             return []
 
     def set_data_funcs(self, get_data_func, save_data_func):
