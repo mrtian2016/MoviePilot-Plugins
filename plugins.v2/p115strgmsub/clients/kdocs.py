@@ -184,6 +184,10 @@ class KDocsClient:
                     continue
                 if isinstance(item, dict) and item.get("code") == 0:
                     data = item.get("data")
+                    # live endpoint wraps payload one level deeper:
+                    # {"code":0,"data":{"code":0,"data":{...}}}
+                    if isinstance(data, dict) and "data" in data:
+                        data = data["data"]
                     break
         finally:
             resp.close()
