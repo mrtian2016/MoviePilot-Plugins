@@ -370,19 +370,33 @@ class KDocsClient:
     @staticmethod
     def _find_header(grid: Dict[Tuple[int, int], str]) -> Optional[int]:
         """
-        Locate the header row: a row containing the link column
-        title plus type/record-id markers.
+        Locate the header row by keyword scoring.
+
+        A merged description cell (row 1) may contain words like
+        「链接」「访问码」「备注」 in prose, so a single-keyword match
+        is not enough. Require at least 4 distinct header keywords
+        on the same row to accept it as the header.
         """
         if not grid:
             return None
+        keywords = (
+            HDR_TYPE, HDR_RECORD, HDR_TITLE, HDR_MEDIA_TITLE,
+            HDR_LINK, HDR_ACCESS_CODE, HDR_NOTE, HDR_CREATE_TIME,
+        )
         max_row = max(r for (r, c) in grid)
+        best_row: Optional[int] = None
+        best_hits = 0
         for row in range(0, max_row + 1):
             row_text = ""
             for (r, c), t in grid.items():
                 if r == row:
                     row_text += t
-            if HDR_LINK in row_text:
-                return row
+            hits = sum(1 for kw in keywords if kw in row_text)
+            if hits > best_hits:
+                best_hits = hits
+                best_row = row
+        if best_hits >= 4:
+            return best_row
         return None
 
     @staticmethod
