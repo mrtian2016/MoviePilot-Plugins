@@ -23,7 +23,7 @@ class NullbrClient:
         self.app_id = app_id
         self.api_key = api_key
         self.headers = {
-            "User-Agent": "MoviePilot/p115strgmsub",
+            "User-Agent": "MoviePilot/p115subsearch",
             "Content-Type": "application/json",
             "X-APP-ID": app_id,
             "X-API-KEY": api_key

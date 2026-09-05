@@ -278,7 +278,7 @@ class SyncHandler:
                                     torrent_name=resource_title,
                                     torrent_description=file_name,
                                     torrent_site="115网盘",
-                                    username="P115StrgmSub",
+                                    username="P115SubSearch",
                                     date=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     note={"source": f"Subscribe|{subscribe.name}", "share_url": share_url}
                                 )
@@ -747,7 +747,7 @@ class SyncHandler:
                                     download_hash=share_url,
                                     torrent_name=resource_title,
                                     torrent_site="115网盘",
-                                    username="P115StrgmSub",
+                                    username="P115SubSearch",
                                     date=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     note={"source": f"Subscribe|{subscribe.name}", "share_url": share_url}
                                 )
@@ -833,6 +833,6 @@ class SyncHandler:
 
         self._post_message(
             mtype=NotificationType.Plugin,
-            title=f"【115网盘订阅追更】转存完成",
+            title=f"【115网盘订阅搜索】转存完成",
             text=f"本次共转存 {total_count} 个文件\n\n" + "\n".join(text_lines)
         )

@@ -84,7 +84,7 @@ class ApiHandler:
 
         if self._save_data:
             self._save_data('history', [])
-        logger.info("115网盘订阅追更历史记录已清空")
+        logger.info("115网盘订阅搜索历史记录已清空")
         return {"success": True, "message": "历史记录已清空"}
 
     def list_directories(self, path: str = "/", apikey: str = "") -> dict:
