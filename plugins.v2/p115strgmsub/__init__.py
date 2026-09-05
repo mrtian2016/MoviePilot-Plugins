@@ -21,7 +21,7 @@ from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType, MediaType, NotificationType
 
-from .clients import PanSouClient, P115ClientManager, NullbrClient, HDHiveOpenAPIClient, HDHiveOpenAPIError
+from .clients import PanSouClient, P115ClientManager, NullbrClient, HDHiveOpenAPIClient, HDHiveOpenAPIError, KDocsClient, KDocsError
 from .handlers import SearchHandler, SyncHandler, SubscribeHandler, ApiHandler
 from .ui import UIConfig
 from .utils import download_so_file
@@ -87,6 +87,14 @@ class P115StrgmSub(_PluginBase):
     _hdhive_cookie: str = ""
     _hdhive_auto_refresh: bool = False
     _hdhive_refresh_before: int = 86400
+
+    # KDocs 在线文档库
+    _kdocs_enabled: bool = False
+    _kdocs_token: str = ""
+    _kdocs_doc_urls: str = ""
+    _kdocs_cache_ttl_hours: int = 6
+    _kdocs_batch_rows: int = 1000
+    _kdocs_cookie: str = ""
     _hdhive_query_mode: str = "api"
     # OpenAPI 应用凭证：应用 Secret 放 X-API-Key（沿用 hdhive_api_key 配置键）
     _hdhive_api_key: str = ""
@@ -585,6 +593,14 @@ class P115StrgmSub(_PluginBase):
             self._hdhive_cookie = config.get("hdhive_cookie", "")
             self._hdhive_auto_refresh = config.get("hdhive_auto_refresh", False)
             self._hdhive_refresh_before = int(config.get("hdhive_refresh_before", 86400) or 86400)
+
+            # KDocs 在线文档库配置
+            self._kdocs_enabled = config.get("kdocs_enabled", False)
+            self._kdocs_token = (config.get("kdocs_token", "") or "").strip()
+            self._kdocs_doc_urls = config.get("kdocs_doc_urls", "") or ""
+            self._kdocs_cache_ttl_hours = int(config.get("kdocs_cache_ttl_hours", 6) or 6)
+            self._kdocs_batch_rows = int(config.get("kdocs_batch_rows", 1000) or 1000)
+            self._kdocs_cookie = config.get("kdocs_cookie", "") or ""
             self._max_transfer_per_sync = int(config.get("max_transfer_per_sync", 50) or 50)
             self._batch_size = int(config.get("batch_size", 20) or 20)
             self._skip_other_season_dirs = config.get("skip_other_season_dirs", True)
@@ -649,6 +665,13 @@ class P115StrgmSub(_PluginBase):
 
     # ------------------ init clients/handlers ------------------
 
+    def _get_kdocs_data_dir(self):
+        """KDocs 缓存目录：插件数据目录"""
+        try:
+            return self.get_data_path()
+        except Exception:
+            return None
+
     def _init_clients(self):
         """初始化客户端"""
         proxy = settings.PROXY
@@ -686,6 +709,25 @@ class P115StrgmSub(_PluginBase):
                 logger.warning("HDHive (API 模式) 已启用但未完成 OpenAPI 应用配置和用户授权，将无法使用 HDHive 查询功能")
             else:
                 logger.info(f"HDHive 配置已加载（模式：{self._hdhive_query_mode}）")
+
+        # KDocs 在线文档库客户端初始化
+        self._kdocs_client = None
+        if self._kdocs_enabled:
+            if not self._kdocs_token:
+                logger.warning("KDocs 在线文档库已启用但未配置 Token，将无法使用 KDocs 查询功能")
+            else:
+                self._kdocs_client = KDocsClient(
+                    token=self._kdocs_token,
+                    doc_urls=self._kdocs_doc_urls,
+                    cache_ttl_hours=self._kdocs_cache_ttl_hours,
+                    batch_rows=self._kdocs_batch_rows,
+                    cookie=self._kdocs_cookie,
+                    data_dir=self._get_kdocs_data_dir(),
+                    timeout=30
+                )
+                logger.info("KDocs 客户端初始化成功")
+        elif self._kdocs_cookie:
+            logger.info("KDocs: 已配置 Cookie 但未启用在线文档库源，仅保存配置")
 
         if self._cookies:
             self._p115_manager = P115ClientManager(cookies=self._cookies)
@@ -781,7 +823,9 @@ class P115StrgmSub(_PluginBase):
             hdhive_cookie=self._hdhive_cookie,
             only_115=self._only_115,
             pansou_channels=self._pansou_channels,
-            search_source_order=self._search_source_order
+            search_source_order=self._search_source_order,
+            kdocs_client=self._kdocs_client,
+            kdocs_enabled=self._kdocs_enabled
         )
         # 设置持久化函数，用于保存订阅的历史积分花费
         self._search_handler.set_data_funcs(self.get_data, self.save_data)
@@ -850,6 +894,13 @@ class P115StrgmSub(_PluginBase):
             "hdhive_cookie": self._hdhive_cookie,
             "hdhive_auto_refresh": self._hdhive_auto_refresh,
             "hdhive_refresh_before": self._hdhive_refresh_before,
+            # KDocs 配置
+            "kdocs_enabled": self._kdocs_enabled,
+            "kdocs_token": self._kdocs_token,
+            "kdocs_doc_urls": self._kdocs_doc_urls,
+            "kdocs_cache_ttl_hours": self._kdocs_cache_ttl_hours,
+            "kdocs_batch_rows": self._kdocs_batch_rows,
+            "kdocs_cookie": self._kdocs_cookie,
             # 其他配置
             "search_source_order": self._search_source_order,
             "subscribe_filter_mode": self._subscribe_filter_mode,
