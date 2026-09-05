@@ -4,11 +4,12 @@
     "release": true,
     "description": "结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集。",
     "labels": "订阅,115网盘",
-    "version": "1.7.0",
+    "version": "v1.7.1",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
     "author": "mrtian2016",
     "level": 1,
     "history": {
+      "v1.7.1": "修复：兼容新版MoviePilot缺失剧集字典字符串键(tmdb:xxx)，修复所有订阅误判「没有缺失剧集信息」导致0转存的问题",
       "v1.6.0": "1. 新增「在线文档库 (KDocs)」搜索源：读取金山文档在线表格资源分享信息，支持多个文档库并发匹配资源与网盘分享链接；2. 搜索源优先级支持 KDocs（在线文档库），与盘搜/影巢等自由排序；3. 新增金山文档 Token 与 Cookie 双认证方式（含获取教程），Token 走 KDocs 开放 API，Cookie 用于会话校验；4. 支持配置多个文档库分享链接、缓存时长与分批行数；5. 【升级注意】使用在线文档库搜索需获取金山文档 Token：电脑浏览器登录 kdocs.cn 后，点击右上角头像 → 「金山文档Skill」→ 复制 Token 粘贴到插件配置；文档库链接默认使用影巢资源分享备份，可自行添加维护。",
       "v1.5.4": "1. 修复 p115client 0.0.8.5.1.1 已从 PyPI 下架导致依赖安装失败的问题，改为 >=0.0.9.6,<0.0.10；",
       "v1.5.3": "1. 更新115依赖",

@@ -489,6 +489,13 @@ class SyncHandler:
 
             if no_exists and mediakey:
                 season_info = no_exists.get(mediakey, {})
+                if not season_info:
+                    # 兼容新版MP的build_media_key字符串键(如'tmdb:121876'/'douban:xxxx')
+                    _suffix = str(mediakey)
+                    for _k, _v in no_exists.items():
+                        if isinstance(_k, str) and _k.endswith(_suffix):
+                            season_info = _v
+                            break
                 not_exist_info = season_info.get(season)
                 if not_exist_info:
                     missing_episodes = not_exist_info.episodes or []
