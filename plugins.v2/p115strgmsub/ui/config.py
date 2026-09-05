@@ -214,7 +214,8 @@ class UIConfig:
                                     'items': [
                                         {'title': 'PanSou (盘搜)', 'value': 'pansou'},
                                         {'title': 'HDHive (影巢)', 'value': 'hdhive'},
-                                        {'title': 'Nullbr', 'value': 'nullbr'}
+                                        {'title': 'Nullbr', 'value': 'nullbr'},
+                                        {'title': 'KDocs (在线文档库)', 'value': 'kdocs'}
                                     ],
                                     'multiple': True,
                                     'chips': True,
@@ -283,6 +284,50 @@ class UIConfig:
                     #          'content': [{'component': 'VTextField', 'props': {"clearable": True, 'model': 'nullbr_api_key', 'label': 'Nullbr API Key', 'type': 'password', 'placeholder': '请输入 API Key'}}]}
                     #     ]
                     # },
+                    # KDocs说明
+                    {
+                        'component': 'VRow',
+                        'content': [{
+                            'component': 'VCol',
+                            'props': {'cols': 12},
+                            'content': [{'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': 'KDocs在线文档库：读取金山文档在线表格中的资源分享信息并匹配网盘链接。需配置Skill Token；留空文档链接时使用默认文档库'}}]
+                        }]
+                    },
+                    # KDocs 配置
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {'component': 'VCol', 'props': {'cols': 6, 'md': 3},
+                             'content': [{'component': 'VSwitch', 'props': {'model': 'kdocs_enabled', 'label': '启用在线文档库'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4},
+                             'content': [{'component': 'VTextField', 'props': {"clearable": True, 'model': 'kdocs_token', 'label': 'Skill Token', 'type': 'password', 'placeholder': 'KDocs Skill Token',
+                                 'hint': '获取：kdocs.cn 登录后右上角头像菜单「金山文档Skill」复制Token', 'persistent-hint': True}}]},
+                            {'component': 'VCol', 'props': {'cols': 6, 'md': 2},
+                             'content': [{'component': 'VTextField', 'props': {'model': 'kdocs_cache_ttl_hours', 'label': '缓存(小时)', 'type': 'number', 'placeholder': '6'}}]},
+                            {'component': 'VCol', 'props': {'cols': 6, 'md': 3},
+                             'content': [{'component': 'VTextField', 'props': {'model': 'kdocs_batch_rows', 'label': '分批行数', 'type': 'number', 'placeholder': '1000', 'hint': '单批拉取行数上限1000'}}]}
+                        ]
+                    },
+                    # KDocs 文档链接
+                    {
+                        'component': 'VRow',
+                        'content': [{
+                            'component': 'VCol',
+                            'props': {'cols': 12},
+                            'content': [{'component': 'VTextarea', 'props': {"clearable": True, 'model': 'kdocs_doc_urls', 'label': '文档库分享链接（每行一个）', 'rows': 3, 'placeholder': 'https://www.kdocs.cn/l/xxxx',
+                                'hint': '留空使用默认文档库；可维护多个文档库同时匹配', 'persistent-hint': True}}]
+                        }]
+                    },
+                    # KDocs Cookie
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 6},
+                             'content': [{'component': 'VTextField', 'props': {"clearable": True, 'model': 'kdocs_cookie', 'label': '金山文档 Cookie', 'type': 'password', 'placeholder': '浏览器登录 kdocs.cn 后 F12 复制 Cookie'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 6},
+                             'content': [{'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': 'Cookie获取教程：浏览器登录 kdocs.cn → F12 打开开发者工具 → 网络/应用面板复制 Cookie 请求头'}}]}
+                        ]
+                    },
                     # HDHive说明
                     {
                         'component': 'VRow',
@@ -462,6 +507,12 @@ class UIConfig:
             "hdhive_cookie": "",
             "hdhive_auto_refresh": True,
             "hdhive_refresh_before": 86400,
+            "kdocs_enabled": False,
+            "kdocs_token": "",
+            "kdocs_doc_urls": "",
+            "kdocs_cache_ttl_hours": 6,
+            "kdocs_batch_rows": 1000,
+            "kdocs_cookie": "",
             "search_source_order": [],
             "subscribe_filter_mode": "exclude",
             "exclude_subscribes": [],
