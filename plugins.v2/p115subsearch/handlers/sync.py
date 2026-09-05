@@ -166,6 +166,10 @@ class SyncHandler:
 
                 share_url = resource.get("url", "")
                 resource_title = resource.get("title", "")
+                # 访问码断层修复（电影分支）：同 TV 分支
+                _pwd = str(resource.get("password") or "")
+                if _pwd and share_url and "password=" not in share_url:
+                    share_url = f"{share_url}?password={_pwd}"
 
                 # 检查是否是刚搜索出尚未真正解锁的延期解锁 HDHive 资源
                 if resource.get("need_unlock") and not share_url:
@@ -568,6 +572,11 @@ class SyncHandler:
 
                     share_url = resource.get("url", "")
                     resource_title = resource.get("title", "")
+                    # 访问码断层修复：搜索源把提取码放在独立 password 字段，
+                    # 而 115 分享解析只认 URL 里的 ?password= 参数，须拼回
+                    _pwd = str(resource.get("password") or "")
+                    if _pwd and share_url and "password=" not in share_url:
+                        share_url = f"{share_url}?password={_pwd}"
 
                     # 检查是否是刚搜索出尚未真正解锁的延期解锁 HDHive 资源
                     if resource.get("need_unlock") and not share_url:
