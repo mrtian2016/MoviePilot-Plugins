@@ -263,6 +263,17 @@ class UIConfig:
                              'content': [{'component': 'VTextField', 'props': {"clearable": True, 'model': 'pansou_password', 'label': 'PanSou 密码', 'type': 'password', 'placeholder': '启用认证时填写'}}]}
                         ]
                     },
+                    # PanSou 链接有效性检测 + 多链接转存
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 6},
+                             'content': [{'component': 'VSwitch', 'props': {'model': 'pansou_check_enabled', 'label': '启用 PanSou 链接有效性检测(全渠道)'}}]},
+                            {'component': 'VCol', 'props': {'cols': 6, 'md': 3},
+                             'content': [{'component': 'VTextField', 'props': {'model': 'max_transfer_links', 'label': '单订阅最大转存链接数', 'type': 'number', 'placeholder': '5',
+                                 'hint': '转存前先用 PanSou 检测链接有效性，对有效链接最多转存这么多个', 'persistent-hint': True}}]}
+                        ]
+                    },
                     # Nullbr说明
                     # {
                     #     'component': 'VRow',
@@ -487,6 +498,8 @@ class UIConfig:
             "pansou_password": "",
             "pansou_auth_enabled": False,
             "pansou_channels": "QukanMovie",
+            "pansou_check_enabled": True,
+            "max_transfer_links": 5,
             "nullbr_enabled": False,
             "nullbr_appid": "",
             "nullbr_api_key": "",

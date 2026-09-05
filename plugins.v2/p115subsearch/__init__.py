@@ -39,7 +39,7 @@ class P115SubSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
     # 插件版本
-    plugin_version = "1.6.4"
+    plugin_version = "1.7.0"
     # 插件作者
     plugin_author = "mrtian2016"
     # 作者主页
@@ -66,6 +66,9 @@ class P115SubSearch(_PluginBase):
     _pansou_password: str = ""
     _pansou_auth_enabled: bool = False
     _pansou_channels: str = "QukanMovie"
+    # PanSou 链接有效性检测层（全渠道）
+    _pansou_check_enabled: bool = True
+    _max_transfer_links: int = 5
 
     _save_path: str = "/我的接收/MoviePilot/TV"
     _movie_save_path: str = "/我的接收/MoviePilot/Movie"
@@ -582,6 +585,12 @@ class P115SubSearch(_PluginBase):
             self._pansou_password = config.get("pansou_password", "")
             self._pansou_auth_enabled = config.get("pansou_auth_enabled", False)
             self._pansou_channels = config.get("pansou_channels", "QukanMovie")
+            # PanSou 链接有效性检测层（全渠道，独立于 pansou_enabled 搜索渠道开关）
+            self._pansou_check_enabled = config.get("pansou_check_enabled", True)
+            try:
+                self._max_transfer_links = max(1, int(config.get("max_transfer_links", 5) or 5))
+            except (ValueError, TypeError):
+                self._max_transfer_links = 5
 
             self._save_path = config.get("save_path", "/我的接收/MoviePilot/TV")
             self._movie_save_path = config.get("movie_save_path", "/我的接收/MoviePilot/Movie")
@@ -698,7 +707,8 @@ class P115SubSearch(_PluginBase):
         if proxy:
             logger.info(f"使用 MoviePilot PROXY: {proxy}")
 
-        if self._pansou_enabled and self._pansou_url:
+        # 只要配置了 PanSou 地址就初始化客户端（检测层独立于搜索渠道开关 pansou_enabled）
+        if self._pansou_url:
             self._pansou_client = PanSouClient(
                 base_url=self._pansou_url,
                 username=self._pansou_username,
@@ -867,7 +877,10 @@ class P115SubSearch(_PluginBase):
             notify=self._notify,
             post_message_func=self.post_message,
             get_data_func=self.get_data,
-            save_data_func=self.save_data
+            save_data_func=self.save_data,
+            pansou_client=self._pansou_client,
+            pansou_check_enabled=self._pansou_check_enabled,
+            max_transfer_links=self._max_transfer_links
         )
 
         self._api_handler = ApiHandler(
@@ -897,6 +910,8 @@ class P115SubSearch(_PluginBase):
             "pansou_password": self._pansou_password,
             "pansou_auth_enabled": self._pansou_auth_enabled,
             "pansou_channels": self._pansou_channels,
+            "pansou_check_enabled": self._pansou_check_enabled,
+            "max_transfer_links": self._max_transfer_links,
             "nullbr_enabled": self._nullbr_enabled,
             "nullbr_appid": self._nullbr_appid,
             "nullbr_api_key": self._nullbr_api_key,

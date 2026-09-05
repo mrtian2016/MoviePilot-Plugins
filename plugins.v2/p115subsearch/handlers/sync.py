@@ -38,7 +38,10 @@ class SyncHandler:
         notify: bool = False,
         post_message_func: Callable = None,
         get_data_func: Callable = None,
-        save_data_func: Callable = None
+        save_data_func: Callable = None,
+        pansou_client=None,
+        pansou_check_enabled: bool = False,
+        max_transfer_links: int = 5
     ):
         """
         初始化同步处理器
@@ -56,6 +59,9 @@ class SyncHandler:
         :param post_message_func: 发送消息的函数
         :param get_data_func: 获取数据的函数
         :param save_data_func: 保存数据的函数
+        :param pansou_client: PanSou 客户端（用于链接有效性检测，渠道无关）
+        :param pansou_check_enabled: 是否启用 PanSou 链接有效性检测层
+        :param max_transfer_links: 单个订阅最大转存链接数
         """
         self._p115_manager = p115_manager
         self._search_handler = search_handler
@@ -70,6 +76,72 @@ class SyncHandler:
         self._post_message = post_message_func
         self._get_data = get_data_func
         self._save_data = save_data_func
+        self._pansou_client = pansou_client
+        self._pansou_check_enabled = pansou_check_enabled
+        self._max_transfer_links = max_transfer_links
+
+    # ------------------ PanSou 链接有效性检测层（全渠道前置过滤） ------------------
+
+    def _build_pansou_check_map(self, resources: List[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+        """
+        对一批搜索结果批量调用 PanSou 链接有效性检测（渠道无关，覆盖全部搜索源）
+
+        :param resources: 搜索结果列表（含 url/password 字段）
+        :return: url -> state 映射；检测未启用或降级失败时返回 None（调用方回退原有校验流程）
+        """
+        if not self._pansou_check_enabled or not self._pansou_client:
+            return None
+
+        items = []
+        for resource in resources:
+            url = resource.get("url", "") or ""
+            # 访问码拼接逻辑与转存循环保持一致（password 必达原则）
+            pwd = str(resource.get("password") or "")
+            if pwd and url and "password=" not in url:
+                url = f"{url}?password={pwd}"
+            if not url:
+                continue
+            items.append({"disk_type": "115", "url": url, "password": pwd})
+
+        if not items:
+            return None
+
+        try:
+            results = self._pansou_client.check_links(items)
+        except Exception as e:
+            logger.warning(f"PanSou 链接有效性检测异常，降级为原有校验流程: {e}")
+            return None
+
+        if not results or len(results) != len(items):
+            logger.warning("PanSou 链接有效性检测无结果或数量不匹配，降级为原有校验流程")
+            return None
+
+        state_map: Dict[str, str] = {}
+        for item, result in zip(items, results):
+            state_map[item["url"]] = str(result.get("state") or "").lower()
+
+        ok_count = sum(1 for s in state_map.values() if s == "ok")
+        bad_count = sum(1 for s in state_map.values() if s == "bad")
+        logger.info(f"PanSou 链接有效性检测完成: 共 {len(state_map)} 个链接, 有效 {ok_count} 个, 失效 {bad_count} 个")
+        return state_map
+
+    def _pansou_check_single(self, share_url: str, pwd: str = "") -> str:
+        """
+        对单个链接补做 PanSou 有效性检测（用于批量检测未覆盖的链接，如 HDHive 解锁后的链接）
+
+        :param share_url: 分享链接
+        :param pwd: 提取码（可为空）
+        :return: state 字符串；检测未启用或降级失败时返回空字符串（调用方回退原有校验流程）
+        """
+        if not self._pansou_check_enabled or not self._pansou_client or not share_url:
+            return ""
+        try:
+            results = self._pansou_client.check_links([{"disk_type": "115", "url": share_url, "password": pwd}])
+            if results:
+                return str(results[0].get("state") or "").lower()
+        except Exception as e:
+            logger.warning(f"PanSou 链接有效性检测异常，降级为原有校验流程: {e}")
+        return ""
 
     def process_movie_subscribe(
         self,
@@ -158,10 +230,14 @@ class SyncHandler:
                 mode_text = "洗版模式" if is_best_version else "严格模式"
                 logger.info(f"电影 {subscribe.name} 过滤条件({mode_text}) - 质量: {subscribe.quality}, 分辨率: {subscribe.resolution}, 特效: {subscribe.effect}")
 
-            # 遍历搜索结果，尝试找到并转存电影
-            movie_transferred = False
+            # PanSou 链接有效性检测层（全渠道前置过滤，降级时回退原有校验流程）
+            pansou_check_map = self._build_pansou_check_map(p115_results)
+
+            # 遍历搜索结果，尝试找到并转存电影（多链接转存：直到达到最大转存链接数）
+            movie_transfer_success_count = 0
             for resource in p115_results:
-                if movie_transferred:
+                if movie_transfer_success_count >= self._max_transfer_links:
+                    logger.info(f"已达单订阅最大转存链接数 {self._max_transfer_links}，不再尝试更多链接")
                     break
 
                 share_url = resource.get("url", "")
@@ -186,6 +262,18 @@ class SyncHandler:
                         resource["need_unlock"] = False
 
                 if not share_url:
+                    continue
+
+                # PanSou 检测层状态判定：bad -> 跳过死链；ok/locked/unsupported/uncertain/未检测 -> 走原有流程
+                # 注意：locked 不能当死链（无码链接与假链接都返回 locked），须回退 check_share_status 判定
+                pansou_state = ""
+                if pansou_check_map is not None:
+                    pansou_state = pansou_check_map.get(share_url, "")
+                    if not pansou_state:
+                        # 批量检测未覆盖的链接（如 HDHive 解锁后才得到），单独补检
+                        pansou_state = self._pansou_check_single(share_url, _pwd)
+                if pansou_state == "bad":
+                    logger.warning(f"PanSou 检测判定链接已失效，跳过: {share_url}")
                     continue
 
                 logger.info(f"检查分享：{resource_title} - {share_url}")
@@ -251,7 +339,7 @@ class SyncHandler:
 
                         if success:
                             transferred_count += 1
-                            movie_transferred = True
+                            movie_transfer_success_count += 1
                             movie_history_score = current_score
                             score_info = f"(分数:{current_score}, 完美匹配:{is_perfect})" if subscribe_filter.has_filters() else ""
                             logger.info(f"成功转存电影：{mediainfo.title} {score_info}")
@@ -535,9 +623,16 @@ class SyncHandler:
                 logger.warning(f"没有可用的搜索源，跳过 {mediainfo.title} S{season} 的搜索")
                 return transferred_count
 
+            # 单订阅已成功转存的链接数（与 _max_transfer_per_sync 的文件数上限是两个不同维度）
+            tv_transfer_link_count = 0
+
             for source_index, source in enumerate(enabled_sources):
                 if not missing_episodes:
                     logger.info(f"{mediainfo.title_year} S{season} 所有缺失剧集已转存完成，不再查询后续源")
+                    break
+
+                if tv_transfer_link_count >= self._max_transfer_links:
+                    logger.info(f"已达单订阅最大转存链接数 {self._max_transfer_links}，不再查询后续源")
                     break
 
                 if transferred_count >= self._max_transfer_per_sync:
@@ -564,10 +659,17 @@ class SyncHandler:
 
                 logger.info(f"[{source.upper()}] 找到 {len(p115_results)} 个 115 网盘资源")
 
+                # PanSou 链接有效性检测层（全渠道前置过滤，降级时回退原有校验流程）
+                pansou_check_map = self._build_pansou_check_map(p115_results)
+
                 # 遍历搜索结果
                 for resource in p115_results:
                     if transferred_count >= self._max_transfer_per_sync:
                         logger.info(f"已达单次同步上限 {self._max_transfer_per_sync}，剩余 {len(missing_episodes)} 集将在下次同步处理")
+                        break
+
+                    if tv_transfer_link_count >= self._max_transfer_links:
+                        logger.info(f"已达单订阅最大转存链接数 {self._max_transfer_links}，不再尝试更多链接")
                         break
 
                     share_url = resource.get("url", "")
@@ -593,6 +695,18 @@ class SyncHandler:
                             resource["need_unlock"] = False
 
                     if not share_url:
+                        continue
+
+                    # PanSou 检测层状态判定：bad -> 跳过死链；ok/locked/unsupported/uncertain/未检测 -> 走原有流程
+                    # 注意：locked 不能当死链（无码链接与假链接都返回 locked），须回退 check_share_status 判定
+                    pansou_state = ""
+                    if pansou_check_map is not None:
+                        pansou_state = pansou_check_map.get(share_url, "")
+                        if not pansou_state:
+                            # 批量检测未覆盖的链接（如 HDHive 解锁后才得到），单独补检
+                            pansou_state = self._pansou_check_single(share_url, _pwd)
+                    if pansou_state == "bad":
+                        logger.warning(f"PanSou 检测判定链接已失效，跳过: {share_url}")
                         continue
 
                     logger.info(f"检查分享：{resource_title} - {share_url}")
@@ -763,6 +877,10 @@ class SyncHandler:
                                 logger.debug(f"已记录 {mediainfo.title} S{season:02d} {episodes_str} 下载历史")
                             except Exception as e:
                                 logger.warning(f"记录下载历史失败：{e}")
+
+                        # 该链接有成功转存的文件，计入单订阅转存链接数
+                        if batch_success_episodes:
+                            tv_transfer_link_count += 1
 
                         if not missing_episodes:
                             break
