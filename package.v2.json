@@ -4,11 +4,12 @@
     "release": true,
     "description": "结合MoviePilot订阅功能，自动搜索115网盘资源并转存缺失剧集。",
     "labels": "订阅,115网盘",
-    "version": "1.5.4",
+    "version": "1.6.0",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png",
     "author": "mrtian2016",
     "level": 1,
     "history": {
+      "v1.6.0": "1. 新增「在线文档库 (KDocs)」搜索源：读取金山文档在线表格资源分享信息，支持多文档库并发匹配；2. 支持配置多个文档库分享链接、缓存时长与分批行数；3. 新增金山文档 Cookie 校验与获取教程；4. 搜索源优先级支持 KDocs 在线文档库；",
       "v1.5.4": "1. 修复 p115client 0.0.8.5.1.1 已从 PyPI 下架导致依赖安装失败的问题，改为 >=0.0.9.6,<0.0.10；",
       "v1.5.3": "1. 更新115依赖",
       "v1.5.2": "1. 新增订阅过滤模式：排除模式（默认）与指定模式（仅处理勾选的订阅），适合以PT订阅为主、网盘订阅为辅的用户；",
