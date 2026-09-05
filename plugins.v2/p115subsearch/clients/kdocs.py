@@ -44,7 +44,7 @@ DEFAULT_COL = {
     "access_code": 8, "note": 9, "create_time": 10,
 }
 # 分批拉取与多库拉取的并发上限
-BATCH_CONCURRENCY = 4
+BATCH_CONCURRENCY = 2
 # 网盘类型识别
 BUCKET_115 = "115\u7f51\u76d8"
 BUCKET_QUARK = "\u5938\u514b\u7f51\u76d8"
@@ -109,7 +109,7 @@ class KDocsClient:
         token: str,
         doc_urls: str = "",
         cache_ttl_hours: int = 6,
-        batch_rows: int = 1000,
+        batch_rows: int = 500,
         cookie: str = "",
         data_dir: Optional[Path] = None,
         timeout: int = 30,
@@ -117,13 +117,15 @@ class KDocsClient:
         self.token = (token or "").strip()
         self.doc_urls = (doc_urls or "").strip()
         self.cache_ttl_hours = max(1, int(cache_ttl_hours or 6))
-        self.batch_rows = max(100, min(int(batch_rows or 1000), 1000))
+        self.batch_rows = max(100, min(int(batch_rows or 500), 1000))
         self.cookie = (cookie or "").strip()
         self.data_dir = Path(data_dir) if data_dir else None
         self.timeout = timeout
         self._cache_lock = threading.Lock()
         self._cache: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._cache_loaded_at: float = 0.0
+        self._refresh_thread: Optional[threading.Thread] = None
+        self._refreshing = threading.Event()
 
     @property
     def is_ready(self) -> bool:
@@ -460,9 +462,17 @@ class KDocsClient:
 
             def fetch_batch(bounds):
                 b_start, b_end = bounds
-                b_cells = self.get_range_data(link_id, sheet_id, b_start, b_end, col_to)
-                b_grid = self._cells_to_grid(b_cells)
-                return self._grid_to_rows(b_grid, cols, b_start, b_end)
+                last_exc = None
+                for attempt in range(2):
+                    try:
+                        b_cells = self.get_range_data(link_id, sheet_id, b_start, b_end, col_to)
+                        b_grid = self._cells_to_grid(b_cells)
+                        return self._grid_to_rows(b_grid, cols, b_start, b_end)
+                    except Exception as exc:
+                        last_exc = exc
+                        if attempt == 0:
+                            time.sleep(3)
+                raise last_exc
 
             with ThreadPoolExecutor(max_workers=BATCH_CONCURRENCY) as pool:
                 futures = {pool.submit(fetch_batch, b): b for b in batches}
@@ -495,6 +505,38 @@ class KDocsClient:
                 "create_time": grid.get((row, cols.get("create_time", 10)), ""),
             })
         return out
+
+    def is_cache_ready(self) -> bool:
+        """缓存是否可用（TTL 内命中或内存已有数据）。"""
+        if self._cache and self._cache_loaded_at > 0:
+            return True
+        return bool(self._load_cache())
+
+    def start_background_refresh(self, force: bool = False):
+        """
+        后台线程预热/刷新数据，立即返回不阻塞调用方。
+        搜索请求只读缓存：缓存未就绪时跳过本源，绝不现场拉全表。
+        """
+        if not self.is_ready:
+            return
+        if not force and self.is_cache_ready():
+            return
+        if self._refreshing.is_set():
+            return
+        self._refreshing.set()
+
+        def _worker():
+            try:
+                logger.info("KDocs: 后台数据刷新开始")
+                self.load_all_rows(force=True)
+                logger.info("KDocs: 后台数据刷新完成")
+            except Exception as exc:
+                logger.error(f"KDocs: 后台数据刷新失败: {exc.__class__.__name__}: {exc}")
+            finally:
+                self._refreshing.clear()
+
+        self._refresh_thread = threading.Thread(target=_worker, daemon=True, name="kdocs-refresh")
+        self._refresh_thread.start()
 
     def load_all_rows(self, force: bool = False) -> List[Dict[str, Any]]:
         """
@@ -571,10 +613,16 @@ class KDocsClient:
     def search(self, keyword: str, only_115: bool = True) -> List[Dict[str, Any]]:
         """
         Search rows by keyword and convert hits to pansou format.
+        只读缓存：缓存未就绪时返回空并触发后台刷新（绝不阻塞搜索请求）。
         """
-        rows = self.load_all_rows()
-        if not rows:
+        if not self.is_cache_ready():
+            logger.info("KDocs: 缓存未就绪，本次跳过 KDocs 源并触发后台预载")
+            self.start_background_refresh()
             return []
+        cached = self._cache or {}
+        rows = []
+        for value in cached.values():
+            rows.extend(value)
         hits = [r for r in rows if self._match_keyword(keyword, r)]
         results = []
         dropped = 0

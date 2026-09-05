@@ -745,7 +745,11 @@ class P115SubSearch(_PluginBase):
                     data_dir=self._get_kdocs_data_dir(),
                     timeout=30
                 )
-                logger.info("KDocs 客户端初始化成功")
+                logger.info("KDocs 客户端初始化成功，启动后台数据预载")
+                try:
+                    self._kdocs_client.start_background_refresh()
+                except Exception as exc:
+                    logger.warning(f"KDocs 后台预载启动失败: {exc.__class__.__name__}")
         elif self._kdocs_cookie:
             logger.info("KDocs: 已配置 Cookie 但未启用在线文档库源，仅保存配置")
 
