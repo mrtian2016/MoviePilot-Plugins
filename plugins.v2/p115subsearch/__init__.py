@@ -39,7 +39,7 @@ class P115SubSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
     # 插件版本
-    plugin_version = "1.7.1"
+    plugin_version = "1.7.2"
     # 插件作者
     plugin_author = "mrtian2016"
     # 作者主页
@@ -125,6 +125,9 @@ class P115SubSearch(_PluginBase):
     _unblock_delay_minutes: int = 5          # -1 禁用触发条件1（并视为禁用窗口）
     _system_subscribe_window_hours: float = 1.0  # 0 禁用窗口
 
+    # 系统订阅站点 RssSites 备份（屏蔽时备份原值，恢复时还原；None=无备份）
+    _rss_sites_backup: Optional[List[int]] = None
+
     # 运行时对象
     _pansou_client: Optional[PanSouClient] = None
     _p115_manager: Optional[P115ClientManager] = None
@@ -136,8 +139,6 @@ class P115SubSearch(_PluginBase):
     _subscribe_handler: Optional[SubscribeHandler] = None
     _sync_handler: Optional[SyncHandler] = None
     _api_handler: Optional[ApiHandler] = None
-
-    _MIN_INTERVAL_HOURS: int = 8
 
     # ------------------ 调度器 ------------------
 
@@ -154,37 +155,6 @@ class P115SubSearch(_PluginBase):
                 self._toggle_scheduler.remove_job(job_id)
             except Exception:
                 pass
-
-    # ------------------ cron间隔校验 ------------------
-
-    @staticmethod
-    def _cron_interval_ge_min_hours(cron_expr: str, min_hours: int) -> bool:
-        cron_expr = (cron_expr or "").strip()
-        if not cron_expr:
-            return False
-        try:
-            tz = pytz.timezone(settings.TZ)
-            trigger = CronTrigger.from_crontab(cron_expr, timezone=tz)
-        except Exception:
-            return False
-
-        now = datetime.datetime.now(tz=pytz.timezone(settings.TZ))
-        fire_times: List[datetime.datetime] = []
-        prev = None
-        current = now
-        for _ in range(12):
-            nxt = trigger.get_next_fire_time(prev, current)
-            if not nxt:
-                break
-            fire_times.append(nxt)
-            prev = nxt
-            current = nxt + datetime.timedelta(seconds=1)
-
-        if len(fire_times) < 2:
-            return True
-
-        min_delta = min(fire_times[i + 1] - fire_times[i] for i in range(len(fire_times) - 1))
-        return min_delta >= datetime.timedelta(hours=min_hours)
 
     # ------------------ 站点解析 ------------------
 
@@ -365,12 +335,101 @@ class P115SubSearch(_PluginBase):
                 except Exception:
                     continue
 
+    # ------------------ 系统 RssSites 同步管控（方案 A1） ------------------
+
+    @staticmethod
+    def _build_system_config_oper():
+        """构建 SystemConfigOper 实例，失败返回 None（兼容不同 MP 版本签名）"""
+        try:
+            from app.db.systemconfig_oper import SystemConfigOper
+        except Exception:
+            return None
+        try:
+            return SystemConfigOper()
+        except Exception:
+            pass
+        try:
+            return SystemConfigOper(db=None)
+        except Exception:
+            return None
+
+    def _get_rss_sites(self) -> Optional[List[int]]:
+        """读取系统 RssSites，失败返回 None"""
+        oper = self._build_system_config_oper()
+        if not oper:
+            return None
+        try:
+            return oper.get('RssSites')
+        except Exception as e:
+            logger.warning(f"读取系统 RssSites 失败（不影响插件运行）: {e}")
+            return None
+
+    def _set_rss_sites(self, value: List[int]) -> bool:
+        """写系统 RssSites，失败返回 False"""
+        oper = self._build_system_config_oper()
+        if not oper:
+            return False
+        try:
+            oper.set('RssSites', value)
+            return True
+        except Exception as e:
+            logger.warning(f"写入系统 RssSites 失败（不影响插件运行）: {e}")
+            return False
+
+    def _backup_and_block_rss_sites(self):
+        """
+        进入屏蔽态：备份 RssSites 原值（仅首次，幂等）并写为 [-1]。
+        - 备份 key 已存在时不覆盖（防止 [-1] 污染原值）
+        - 当前值就是 [-1]（已污染/用户本就屏蔽）时不备份
+        """
+        current = self._get_rss_sites()
+        if current is not None and list(current) != [-1] and self._rss_sites_backup is None:
+            self._rss_sites_backup = list(current)
+            logger.info(f"已备份系统订阅站点 RssSites 原值（{len(current)} 个站点），RssSites 将切换为 [-1]")
+        self._set_rss_sites([-1])
+
+    def _restore_rss_sites_backup(self) -> bool:
+        """
+        进入恢复态：从备份还原 RssSites 原值并清除备份。
+        返回是否实际还原（还原优先，调用方据此跳过默认站点尝试）。
+        """
+        if self._rss_sites_backup is None:
+            return False
+        restored = self._set_rss_sites(list(self._rss_sites_backup))
+        if restored:
+            logger.info(f"已还原系统订阅站点 RssSites 原值（{len(self._rss_sites_backup)} 个站点）")
+        self._rss_sites_backup = None
+        return restored
+
+    def _selfheal_rss_sites_on_start(self):
+        """
+        启动自愈（init_plugin 早期调用）：
+        - 屏蔽态且 RssSites != [-1] -> 补写 [-1]
+        - 非屏蔽态且存在备份 -> 还原备份并清除备份
+        - 干净态 -> 不动
+        """
+        try:
+            if self._block_system_subscribe:
+                current = self._get_rss_sites()
+                if current is None or list(current) == [-1]:
+                    return
+                self._backup_and_block_rss_sites()
+                logger.info("启动自愈：当前为屏蔽态，已补写系统 RssSites=[-1]")
+            else:
+                if self._rss_sites_backup is None:
+                    return
+                self._restore_rss_sites_backup()
+                logger.info("启动自愈：当前为非屏蔽态，已还原系统 RssSites 备份")
+        except Exception as e:
+            logger.warning(f"启动自愈 RssSites 失败（不影响插件运行）: {e}")
+
     # ------------------ 两态切换（日志统一） ------------------
 
     def _enter_blocked(self, reason: str):
         """
         已屏蔽系统订阅：
         - 全量订阅 sites=仅115
+        - 同步管控系统 RssSites：备份原值（仅首次）并写为 [-1]（方案 A1）
         - 不再尝试设置屏蔽态默认站点=115（依赖 SubscribeAdded 兜底）
         - 取消所有窗口任务
         """
@@ -379,6 +438,7 @@ class P115SubSearch(_PluginBase):
         self._init_subscribe_handler()
 
         self._subscribe_handler.set_blocked_sites_only_115()
+        self._backup_and_block_rss_sites()
         self._block_system_subscribe = True
         self.__update_config()
         logger.info(f"已屏蔽系统订阅（仅115网盘）：{reason}")
@@ -387,7 +447,7 @@ class P115SubSearch(_PluginBase):
         """
         已恢复系统订阅：
         - 全量订阅 sites=UI站点
-        - 尽力设置系统默认订阅站点=UI站点（若存在key）
+        - 还原系统 RssSites 备份（优先）；无备份时尽力设置系统默认订阅站点=UI站点
         - 从进入时刻计窗口，到期切回屏蔽
         """
         if not self._window_enabled():
@@ -408,7 +468,9 @@ class P115SubSearch(_PluginBase):
             return
 
         self._apply_sites_to_all_subscribes(site_ids, reason="已恢复系统订阅：全量同步站点")
-        self._try_set_default_sites_for_unblocked(site_ids)
+        # 还原备份优先：有备份时还原 RssSites 原值，跳过默认站点尝试（二者不得互相覆盖）
+        if not self._restore_rss_sites_backup():
+            self._try_set_default_sites_for_unblocked(site_ids)
 
         self._block_system_subscribe = False
         self.__update_config()
@@ -567,13 +629,6 @@ class P115SubSearch(_PluginBase):
             self._enabled = config.get("enabled", False)
 
             self._cron = (config.get("cron", self._cron) or "").strip()
-            if self._cron:
-                ok = self._cron_interval_ge_min_hours(self._cron, self._MIN_INTERVAL_HOURS)
-                if not ok:
-                    logger.warning(
-                        f"Cron 过于频繁（要求间隔>= {self._MIN_INTERVAL_HOURS}h）：{self._cron}，已回退默认 30 */8 * * *"
-                    )
-                    self._cron = "30 */8 * * *"
 
             self._notify = config.get("notify", False)
             self._onlyonce = config.get("onlyonce", False)
@@ -657,10 +712,16 @@ class P115SubSearch(_PluginBase):
             )
 
             self._block_system_subscribe = bool(config.get("block_system_subscribe", False))
+            # RssSites 备份（屏蔽态持久化，恢复时还原）
+            backup = config.get("rss_sites_backup")
+            self._rss_sites_backup = list(backup) if isinstance(backup, (list, tuple)) and backup else None
 
         # 初始化客户端/handlers
         self._init_clients()
         self._init_handlers()
+
+        # 启动自愈：屏蔽态补写 RssSites=[-1]；非屏蔽态还原遗留备份
+        self._selfheal_rss_sites_on_start()
 
         # 配置立即生效
         if self._block_system_subscribe:
@@ -672,7 +733,12 @@ class P115SubSearch(_PluginBase):
                 site_ids = self._resolve_site_ids(ids=self._unblock_site_ids, names=self._unblock_site_names)
                 if site_ids:
                     self._apply_sites_to_all_subscribes(site_ids, reason="用户关闭屏蔽：全量同步站点")
-                    self._try_set_default_sites_for_unblocked(site_ids)
+                    # 还原备份优先；无备份时回退默认站点尝试
+                    if not self._restore_rss_sites_backup():
+                        self._try_set_default_sites_for_unblocked(site_ids)
+            else:
+                # 未配置窗口站点也必须还原备份，不能把用户 RssSites 留在 [-1] 态
+                self._restore_rss_sites_backup()
             self.__update_config()
             logger.info("用户已关闭屏蔽系统订阅（配置应用）")
 
@@ -954,6 +1020,7 @@ class P115SubSearch(_PluginBase):
             "unblock_delay_minutes": self._unblock_delay_minutes,
             "system_subscribe_window_hours": self._system_subscribe_window_hours,
             "unblock_window_hours": self._system_subscribe_window_hours,
+            "rss_sites_backup": self._rss_sites_backup,
         })
 
     # ------------------ stop ------------------
@@ -1027,7 +1094,7 @@ class P115SubSearch(_PluginBase):
 
         services = []
 
-        if self._cron and self._cron_interval_ge_min_hours(self._cron, self._MIN_INTERVAL_HOURS):
+        if self._cron:
             try:
                 services.append({
                     "id": "P115SubSearch",

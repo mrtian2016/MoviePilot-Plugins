@@ -83,7 +83,7 @@ class UIConfig:
                                 'props': {
                                     'type': 'info',
                                     'variant': 'tonal',
-                                    'text': '自动搜索115网盘资源并转存缺失的电影和剧集，需配置115 Cookie和搜索服务。避免风控，固定执行周期为 8 小时。'
+                                    'text': '自动搜索115网盘资源并转存缺失的电影和剧集，需配置115 Cookie和搜索服务。执行周期支持任意 Cron 表达式，按配置原样生效。'
                                 }
                             }]
                         }]
@@ -107,7 +107,7 @@ class UIConfig:
                                      'model': 'cron',
                                      'label': '执行周期（Cron）',
                                      'placeholder': '30 2,10,18 * * *',
-                                     'hint': '5段 Cron：分 时 日 月 周；例：2,10,18 * * * 表示2点、10点、18点的30分执行',
+                                     'hint': '5段 Cron：分 时 日 月 周；任意合法 Cron 按原样生效（无最小间隔限制）。例：30 2,10,18 * * * 表示2点、10点、18点的30分执行',
                                      'persistent-hint': True,
                                      'clearable': True
                                  }
