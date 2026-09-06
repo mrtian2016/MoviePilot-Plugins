@@ -207,17 +207,13 @@ class SyncHandler:
                 logger.warn(f"无法识别媒体信息：{subscribe.name}")
                 return transferred_count
 
-            # 搜索网盘资源
-            p115_results = self._search_handler.search_resources(
-                mediainfo=mediainfo,
-                media_type=MediaType.MOVIE
-            )
-
-            if not p115_results:
-                logger.info(f"未找到电影 {mediainfo.title} 的 115 网盘资源")
+            # v1.7.3 渠道级"真实转存成功"判定：按渠道循环，当前渠道的结果
+            # 全部转存失败（无效链接/匹配失败/转存API失败）时，同一轮内立即
+            # 继续搜索下一个渠道，直到某渠道真实转存成功或渠道耗尽
+            enabled_sources = self._search_handler.get_enabled_sources()
+            if not enabled_sources:
+                logger.warning(f"没有可用的搜索源，跳过电影 {mediainfo.title} 的搜索")
                 return transferred_count
-
-            logger.info(f"找到 {len(p115_results)} 个 115 网盘资源")
 
             # 创建订阅过滤条件
             subscribe_filter = SubscribeFilter(
@@ -230,169 +226,219 @@ class SyncHandler:
                 mode_text = "洗版模式" if is_best_version else "严格模式"
                 logger.info(f"电影 {subscribe.name} 过滤条件({mode_text}) - 质量: {subscribe.quality}, 分辨率: {subscribe.resolution}, 特效: {subscribe.effect}")
 
-            # PanSou 链接有效性检测层（全渠道前置过滤，降级时回退原有校验流程）
-            pansou_check_map = self._build_pansou_check_map(p115_results)
-
-            # 遍历搜索结果，尝试找到并转存电影（多链接转存：直到达到最大转存链接数）
+            # 多链接转存：直到达到最大转存链接数（跨渠道累计）
             movie_transfer_success_count = 0
-            for resource in p115_results:
+
+            for source_index, source in enumerate(enabled_sources):
+                # 全局/单订阅上限达到后不再搜索后续渠道
                 if movie_transfer_success_count >= self._max_transfer_links:
-                    logger.info(f"已达单订阅最大转存链接数 {self._max_transfer_links}，不再尝试更多链接")
+                    logger.info(f"已达单订阅最大转存链接数 {self._max_transfer_links}，不再尝试更多渠道")
+                    break
+                if transferred_count >= self._max_transfer_per_sync:
+                    logger.info(f"已达单次同步上限 {self._max_transfer_per_sync}，不再尝试更多渠道")
                     break
 
-                share_url = resource.get("url", "")
-                resource_title = resource.get("title", "")
-                # 访问码断层修复（电影分支）：同 TV 分支
-                _pwd = str(resource.get("password") or "")
-                if _pwd and share_url and "password=" not in share_url:
-                    share_url = f"{share_url}?password={_pwd}"
+                # 搜索当前渠道
+                p115_results = self._search_handler.search_single_source(
+                    source=source,
+                    mediainfo=mediainfo,
+                    media_type=MediaType.MOVIE
+                )
 
-                # 检查是否是刚搜索出尚未真正解锁的延期解锁 HDHive 资源
-                if resource.get("need_unlock") and not share_url:
-                    slug = resource.get("slug")
-                    if slug:
-                        logger.info(f"遇到需要解锁的收费资源 {resource_title} (slug: {slug})，尝试消耗积分解锁...")
-                        unlocked_url = self._search_handler.unlock_hdhive_resource(slug, resource.get("unlock_points", 0))
-                        if not unlocked_url:
-                            logger.error(f"未能解锁收费资源: {resource_title}")
-                            continue
-                        share_url = unlocked_url
-                        # 更新当前字典以便历史存入或下次能沿用这个 url
-                        resource["url"] = share_url
-                        resource["need_unlock"] = False
-
-                if not share_url:
+                if not p115_results:
+                    remaining_sources = enabled_sources[source_index + 1:]
+                    if remaining_sources:
+                        logger.info(f"[{source.upper()}] 未找到电影资源，将尝试下一个渠道: {remaining_sources[0].upper()}")
+                    else:
+                        logger.info(f"[{source.upper()}] 未找到电影资源，已无更多可用渠道")
                     continue
 
-                # PanSou 检测层状态判定：bad -> 跳过死链；ok/locked/unsupported/uncertain/未检测 -> 走原有流程
-                # 注意：locked 不能当死链（无码链接与假链接都返回 locked），须回退 check_share_status 判定
-                pansou_state = ""
-                if pansou_check_map is not None:
-                    pansou_state = pansou_check_map.get(share_url, "")
-                    if not pansou_state:
-                        # 批量检测未覆盖的链接（如 HDHive 解锁后才得到），单独补检
-                        pansou_state = self._pansou_check_single(share_url, _pwd)
-                if pansou_state == "bad":
-                    logger.warning(f"PanSou 检测判定链接已失效，跳过: {share_url}")
-                    continue
+                logger.info(f"[{source.upper()}] 找到 {len(p115_results)} 个 115 网盘资源")
 
-                logger.info(f"检查分享：{resource_title} - {share_url}")
+                # PanSou 链接有效性检测层（全渠道前置过滤，降级时回退原有校验流程）
+                pansou_check_map = self._build_pansou_check_map(p115_results)
 
-                try:
-                    # 先检查分享链接是否有效
-                    share_status = self._p115_manager.check_share_status(share_url)
-                    if not share_status.is_valid:
-                        logger.warning(f"分享链接无效：{share_url}，原因：{share_status.status_text}")
-                        continue
+                # 本渠道真实转存成功数（渠道成功的唯一判定依据）
+                channel_transfer_success = 0
 
-                    share_files = self._p115_manager.list_share_files(share_url)
-                    if not share_files:
-                        logger.info(f"分享链接无内容：{share_url}")
-                        continue
+                # 遍历当前渠道搜索结果，尝试找到并转存电影（多链接转存：直到达到最大转存链接数）
+                for resource in p115_results:
+                    if movie_transfer_success_count >= self._max_transfer_links:
+                        logger.info(f"已达单订阅最大转存链接数 {self._max_transfer_links}，不再尝试更多链接")
+                        break
 
-                    # 匹配电影文件
-                    matched_file = FileMatcher.match_movie_file(
-                        share_files, mediainfo.title,
-                        subscribe_filter=subscribe_filter
-                    )
+                    share_url = resource.get("url", "")
+                    resource_title = resource.get("title", "")
+                    # 访问码断层修复（电影分支）：同 TV 分支
+                    _pwd = str(resource.get("password") or "")
+                    if _pwd and share_url and "password=" not in share_url:
+                        share_url = f"{share_url}?password={_pwd}"
 
-                    if matched_file:
-                        file_name = matched_file.get('name', '')
-                        logger.info(f"找到匹配文件：{file_name}")
-
-                        # 计算当前文件的过滤分数和是否完美匹配
-                        _, current_score = subscribe_filter.match(file_name) if subscribe_filter.has_filters() else (True, 0)
-                        is_perfect = subscribe_filter.is_perfect_match(file_name) if subscribe_filter.has_filters() else True
-
-                        # 洗版模式下检查是否需要升级资源
-                        if is_best_version and movie_history_score >= 0:
-                            if current_score <= movie_history_score:
-                                logger.info(f"电影 {mediainfo.title} 已有分数 {movie_history_score}，当前 {current_score}，跳过")
+                    # 检查是否是刚搜索出尚未真正解锁的延期解锁 HDHive 资源
+                    if resource.get("need_unlock") and not share_url:
+                        slug = resource.get("slug")
+                        if slug:
+                            logger.info(f"遇到需要解锁的收费资源 {resource_title} (slug: {slug})，尝试消耗积分解锁...")
+                            unlocked_url = self._search_handler.unlock_hdhive_resource(slug, resource.get("unlock_points", 0))
+                            if not unlocked_url:
+                                logger.error(f"未能解锁收费资源: {resource_title}")
                                 continue
-                            else:
-                                logger.info(f"电影 {mediainfo.title} 洗版：旧分数 {movie_history_score} -> 新分数 {current_score}")
+                            share_url = unlocked_url
+                            # 更新当前字典以便历史存入或下次能沿用这个 url
+                            resource["url"] = share_url
+                            resource["need_unlock"] = False
 
-                        # 构建转存路径
-                        save_dir = f"{self._movie_save_path}/{mediainfo.title} ({mediainfo.year})" if mediainfo.year else f"{self._movie_save_path}/{mediainfo.title}"
-                        logger.info(f"转存目标路径: {save_dir}")
+                    if not share_url:
+                        continue
 
-                        # 执行转存
-                        success = self._p115_manager.transfer_file(
-                            share_url=share_url,
-                            file_id=matched_file.get("id"),
-                            save_path=save_dir
+                    # PanSou 检测层状态判定：bad -> 跳过死链；ok/locked/unsupported/uncertain/未检测 -> 走原有流程
+                    # 注意：locked 不能当死链（无码链接与假链接都返回 locked），须回退 check_share_status 判定
+                    pansou_state = ""
+                    if pansou_check_map is not None:
+                        pansou_state = pansou_check_map.get(share_url, "")
+                        if not pansou_state:
+                            # 批量检测未覆盖的链接（如 HDHive 解锁后才得到），单独补检
+                            pansou_state = self._pansou_check_single(share_url, _pwd)
+                    if pansou_state == "bad":
+                        logger.warning(f"PanSou 检测判定链接已失效，跳过: {share_url}")
+                        continue
+
+                    logger.info(f"检查分享：{resource_title} - {share_url}")
+
+                    try:
+                        # 先检查分享链接是否有效
+                        share_status = self._p115_manager.check_share_status(share_url)
+                        if not share_status.is_valid:
+                            logger.warning(f"分享链接无效：{share_url}，原因：{share_status.status_text}")
+                            continue
+
+                        share_files = self._p115_manager.list_share_files(share_url)
+                        if not share_files:
+                            logger.info(f"分享链接无内容：{share_url}")
+                            continue
+
+                        # 匹配电影文件
+                        matched_file = FileMatcher.match_movie_file(
+                            share_files, mediainfo.title,
+                            subscribe_filter=subscribe_filter
                         )
 
-                        # 记录历史
-                        history_item = {
-                            "title": mediainfo.title,
-                            "year": mediainfo.year,
-                            "type": "电影",
-                            "status": "成功" if success else "失败",
-                            "share_url": share_url,
-                            "file_name": file_name,
-                            "filter_score": current_score,
-                            "perfect_match": is_perfect,
-                            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        }
-                        history.append(history_item)
+                        if matched_file:
+                            file_name = matched_file.get('name', '')
+                            logger.info(f"找到匹配文件：{file_name}")
 
-                        if success:
-                            transferred_count += 1
-                            movie_transfer_success_count += 1
-                            movie_history_score = current_score
-                            score_info = f"(分数:{current_score}, 完美匹配:{is_perfect})" if subscribe_filter.has_filters() else ""
-                            logger.info(f"成功转存电影：{mediainfo.title} {score_info}")
+                            # 计算当前文件的过滤分数和是否完美匹配
+                            _, current_score = subscribe_filter.match(file_name) if subscribe_filter.has_filters() else (True, 0)
+                            is_perfect = subscribe_filter.is_perfect_match(file_name) if subscribe_filter.has_filters() else True
 
-                            # 收集转存详情用于通知
-                            transfer_details.append({
-                                "type": "电影",
+                            # 洗版模式下检查是否需要升级资源
+                            if is_best_version and movie_history_score >= 0:
+                                if current_score <= movie_history_score:
+                                    logger.info(f"电影 {mediainfo.title} 已有分数 {movie_history_score}，当前 {current_score}，跳过")
+                                    continue
+                                else:
+                                    logger.info(f"电影 {mediainfo.title} 洗版：旧分数 {movie_history_score} -> 新分数 {current_score}")
+
+                            # 构建转存路径
+                            save_dir = f"{self._movie_save_path}/{mediainfo.title} ({mediainfo.year})" if mediainfo.year else f"{self._movie_save_path}/{mediainfo.title}"
+                            logger.info(f"转存目标路径: {save_dir}")
+
+                            # 执行转存
+                            success = self._p115_manager.transfer_file(
+                                share_url=share_url,
+                                file_id=matched_file.get("id"),
+                                save_path=save_dir
+                            )
+
+                            # 记录历史
+                            history_item = {
                                 "title": mediainfo.title,
                                 "year": mediainfo.year,
-                                "image": mediainfo.get_poster_image(),
-                                "file_name": file_name
-                            })
+                                "type": "电影",
+                                "status": "成功" if success else "失败",
+                                "share_url": share_url,
+                                "file_name": file_name,
+                                "filter_score": current_score,
+                                "perfect_match": is_perfect,
+                                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            }
+                            history.append(history_item)
 
-                            # 添加下载历史记录
-                            try:
-                                DownloadHistoryOper().add(
-                                    path=save_dir,
-                                    type=mediainfo.type.value,
-                                    title=mediainfo.title,
-                                    year=mediainfo.year,
-                                    tmdbid=mediainfo.tmdb_id,
-                                    imdbid=mediainfo.imdb_id,
-                                    tvdbid=mediainfo.tvdb_id,
-                                    doubanid=mediainfo.douban_id,
-                                    image=mediainfo.get_poster_image(),
-                                    downloader="115网盘",
-                                    download_hash=matched_file.get("id"),
-                                    torrent_name=resource_title,
-                                    torrent_description=file_name,
-                                    torrent_site="115网盘",
-                                    username="P115SubSearch",
-                                    date=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    note={"source": f"Subscribe|{subscribe.name}", "share_url": share_url}
+                            if success:
+                                transferred_count += 1
+                                movie_transfer_success_count += 1
+                                channel_transfer_success += 1
+                                movie_history_score = current_score
+                                score_info = f"(分数:{current_score}, 完美匹配:{is_perfect})" if subscribe_filter.has_filters() else ""
+                                logger.info(f"成功转存电影：{mediainfo.title} {score_info}")
+
+                                # 收集转存详情用于通知
+                                transfer_details.append({
+                                    "type": "电影",
+                                    "title": mediainfo.title,
+                                    "year": mediainfo.year,
+                                    "image": mediainfo.get_poster_image(),
+                                    "file_name": file_name
+                                })
+
+                                # 添加下载历史记录
+                                try:
+                                    DownloadHistoryOper().add(
+                                        path=save_dir,
+                                        type=mediainfo.type.value,
+                                        title=mediainfo.title,
+                                        year=mediainfo.year,
+                                        tmdbid=mediainfo.tmdb_id,
+                                        imdbid=mediainfo.imdb_id,
+                                        tvdbid=mediainfo.tvdb_id,
+                                        doubanid=mediainfo.douban_id,
+                                        image=mediainfo.get_poster_image(),
+                                        downloader="115网盘",
+                                        download_hash=matched_file.get("id"),
+                                        torrent_name=resource_title,
+                                        torrent_description=file_name,
+                                        torrent_site="115网盘",
+                                        username="P115SubSearch",
+                                        date=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        note={"source": f"Subscribe|{subscribe.name}", "share_url": share_url}
+                                    )
+                                    logger.debug(f"已记录电影 {mediainfo.title} 下载历史")
+                                except Exception as e:
+                                    logger.warning(f"记录下载历史失败：{e}")
+
+                                # 电影转存成功后完成订阅
+                                self._subscribe_handler.check_and_finish_subscribe(
+                                    subscribe=subscribe,
+                                    mediainfo=mediainfo,
+                                    success_episodes=[1]
                                 )
-                                logger.debug(f"已记录电影 {mediainfo.title} 下载历史")
-                            except Exception as e:
-                                logger.warning(f"记录下载历史失败：{e}")
+                                # 订阅完成，清除该订阅的历史积分记录
+                                if hasattr(self._search_handler, 'clear_sub_points'):
+                                    self._search_handler.clear_sub_points(sub_key)
+                            else:
+                                logger.error(f"转存失败：{mediainfo.title}")
 
-                            # 电影转存成功后完成订阅
-                            self._subscribe_handler.check_and_finish_subscribe(
-                                subscribe=subscribe,
-                                mediainfo=mediainfo,
-                                success_episodes=[1]
-                            )
-                            # 订阅完成，清除该订阅的历史积分记录
-                            if hasattr(self._search_handler, 'clear_sub_points'):
-                                self._search_handler.clear_sub_points(sub_key)
-                        else:
-                            logger.error(f"转存失败：{mediainfo.title}")
+                    except Exception as e:
+                        logger.error(f"处理分享链接出错：{share_url}, 错误：{str(e)}")
+                        continue
 
-                except Exception as e:
-                    logger.error(f"处理分享链接出错：{share_url}, 错误：{str(e)}")
-                    continue
+                # 渠道可观测性日志：搜索到N个/有效转存M个
+                logger.info(f"[渠道{source.upper()}] 搜索到 {len(p115_results)} 个 / 有效转存 {channel_transfer_success} 个")
+
+                # 渠道成功判定：本渠道至少一个链接真实转存成功才算渠道成功；
+                # 全部失败（假链接/匹配失败/转存失败）时同轮立即继续下一个渠道
+                if channel_transfer_success > 0:
+                    logger.info(f"[{source.upper()}] 渠道真实转存成功（{channel_transfer_success} 个），电影渠道搜索结束")
+                    break
+                else:
+                    remaining_sources = enabled_sources[source_index + 1:]
+                    if remaining_sources:
+                        logger.warning(f"[{source.upper()}] 渠道 {len(p115_results)} 个结果均未成功转存（疑似假链接渠道），同轮回退继续搜索: {remaining_sources[0].upper()}")
+                    else:
+                        logger.warning(f"[{source.upper()}] 渠道 {len(p115_results)} 个结果均未成功转存（疑似假链接渠道），已无更多可用渠道")
+
+            if movie_transfer_success_count == 0:
+                logger.info(f"电影 {mediainfo.title} 本轮所有渠道均未真实转存成功")
 
         except Exception as e:
             logger.error(f"处理电影订阅 {subscribe.name} 出错：{str(e)}")
@@ -669,6 +715,9 @@ class SyncHandler:
                 # PanSou 链接有效性检测层（全渠道前置过滤，降级时回退原有校验流程）
                 pansou_check_map = self._build_pansou_check_map(p115_results)
 
+                # 本源真实转存成功数（渠道可观测性用；TV 多集追根不看渠道成功，仍继续后续源）
+                channel_transfer_success = 0
+
                 # 遍历搜索结果
                 for resource in p115_results:
                     if transferred_count >= self._max_transfer_per_sync:
@@ -823,6 +872,7 @@ class SyncHandler:
 
                             if success:
                                 transferred_count += 1
+                                channel_transfer_success += 1
                                 episode_history_scores[episode] = current_score
 
                                 if episode in missing_episodes:
@@ -895,6 +945,10 @@ class SyncHandler:
                     except Exception as e:
                         logger.error(f"处理分享链接出错：{share_url}, 错误：{str(e)}")
                         continue
+
+                # 渠道可观测性日志：搜索到N个/有效转存M个（TV 多集追根不看渠道成功，
+                # 后续源无论前序源成败都继续参与搜索，直至缺失集清零或配额耗尽）
+                logger.info(f"[渠道{source.upper()}] 搜索到 {len(p115_results)} 个 / 有效转存 {channel_transfer_success} 个")
 
                 # 当前源处理完成
                 if missing_episodes:

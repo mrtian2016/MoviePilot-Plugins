@@ -39,7 +39,7 @@ class P115SubSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/cloud.png"
     # 插件版本
-    plugin_version = "1.7.2"
+    plugin_version = "1.7.3"
     # 插件作者
     plugin_author = "mrtian2016"
     # 作者主页
@@ -140,6 +140,11 @@ class P115SubSearch(_PluginBase):
     _sync_handler: Optional[SyncHandler] = None
     _api_handler: Optional[ApiHandler] = None
 
+    # v1.7.3 恢复 cron 最小间隔限制（v1.7.2 曾取消，阈值从 8 小时调整为 4 小时）
+    _MIN_INTERVAL_HOURS: int = 4
+    # 间隔不足时的回退默认 cron（同 4 小时周期）
+    _FALLBACK_CRON: str = "30 */4 * * *"
+
     # ------------------ 调度器 ------------------
 
     def _ensure_toggle_scheduler(self):
@@ -155,6 +160,42 @@ class P115SubSearch(_PluginBase):
                 self._toggle_scheduler.remove_job(job_id)
             except Exception:
                 pass
+
+    # ------------------ cron间隔校验 ------------------
+
+    @staticmethod
+    def _cron_interval_ge_min_hours(cron_expr: str, min_hours: int) -> bool:
+        """
+        校验 cron 表达式的实际最小触发间隔是否 >= min_hours 小时
+        通过计算未来 12 次触发时间，取相邻两次的最小间隔判断
+        （v1.7.3 恢复，阈值 4 小时）
+        """
+        cron_expr = (cron_expr or "").strip()
+        if not cron_expr:
+            return False
+        try:
+            tz = pytz.timezone(settings.TZ)
+            trigger = CronTrigger.from_crontab(cron_expr, timezone=tz)
+        except Exception:
+            return False
+
+        now = datetime.datetime.now(tz=pytz.timezone(settings.TZ))
+        fire_times: List[datetime.datetime] = []
+        prev = None
+        current = now
+        for _ in range(12):
+            nxt = trigger.get_next_fire_time(prev, current)
+            if not nxt:
+                break
+            fire_times.append(nxt)
+            prev = nxt
+            current = nxt + datetime.timedelta(seconds=1)
+
+        if len(fire_times) < 2:
+            return True
+
+        min_delta = min(fire_times[i + 1] - fire_times[i] for i in range(len(fire_times) - 1))
+        return min_delta >= datetime.timedelta(hours=min_hours)
 
     # ------------------ 站点解析 ------------------
 
@@ -629,6 +670,14 @@ class P115SubSearch(_PluginBase):
             self._enabled = config.get("enabled", False)
 
             self._cron = (config.get("cron", self._cron) or "").strip()
+            # v1.7.3 恢复最小间隔校验（阈值 4 小时）：不足时回退默认 4 小时周期
+            if self._cron:
+                ok = self._cron_interval_ge_min_hours(self._cron, self._MIN_INTERVAL_HOURS)
+                if not ok:
+                    logger.warning(
+                        f"Cron 过于频繁（要求间隔 >= {self._MIN_INTERVAL_HOURS}h）：{self._cron}，已回退默认 {self._FALLBACK_CRON}"
+                    )
+                    self._cron = self._FALLBACK_CRON
 
             self._notify = config.get("notify", False)
             self._onlyonce = config.get("onlyonce", False)
@@ -1094,23 +1143,32 @@ class P115SubSearch(_PluginBase):
 
         services = []
 
-        if self._cron:
+        # v1.7.3 恢复注册时最小间隔校验（双保险：init_plugin 已校验，此处防止
+        # 运行中配置被外部改动导致过密触发）；不满足时回退 4 小时周期
+        effective_cron = self._cron
+        if effective_cron and not self._cron_interval_ge_min_hours(effective_cron, self._MIN_INTERVAL_HOURS):
+            logger.warning(
+                f"注册服务时 Cron 过密（要求间隔 >= {self._MIN_INTERVAL_HOURS}h）：{effective_cron}，回退 {self._FALLBACK_CRON}"
+            )
+            effective_cron = self._FALLBACK_CRON
+
+        if effective_cron:
             try:
                 services.append({
                     "id": "P115SubSearch",
                     "name": "115网盘订阅搜索服务",
-                    "trigger": CronTrigger.from_crontab(self._cron),
+                    "trigger": CronTrigger.from_crontab(effective_cron),
                     "func": self.sync_subscribes,
                     "kwargs": {}
                 })
             except Exception as e:
-                logger.warning(f"Cron 表达式无效：{self._cron}，将回退 interval=8h。错误：{e}")
+                logger.warning(f"Cron 表达式无效：{effective_cron}，将回退 interval=4h。错误：{e}")
                 services.append({
                     "id": "P115SubSearch",
                     "name": "115网盘订阅搜索服务",
                     "trigger": "interval",
                     "func": self.sync_subscribes,
-                    "kwargs": {"hours": 8}
+                    "kwargs": {"hours": self._MIN_INTERVAL_HOURS}
                 })
         else:
             services.append({
@@ -1118,7 +1176,7 @@ class P115SubSearch(_PluginBase):
                 "name": "115网盘订阅搜索服务",
                 "trigger": "interval",
                 "func": self.sync_subscribes,
-                "kwargs": {"hours": 8}
+                "kwargs": {"hours": self._MIN_INTERVAL_HOURS}
             })
 
         return services

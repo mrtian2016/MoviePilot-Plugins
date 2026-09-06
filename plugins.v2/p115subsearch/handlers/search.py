@@ -84,6 +84,7 @@ class SearchHandler:
     def get_enabled_sources(self) -> List[str]:
         """
         获取已启用且可用的搜索源列表，按优先级排序
+        （v1.7.3 渠道级回退：电影分支由上层逐渠道调用 search_single_source 消费此列表）
 
         优先级规则：
         1. 用户配置了自定义优先级（search_source_order）时按其顺序排列；
@@ -129,37 +130,41 @@ class SearchHandler:
         season: Optional[int] = None
     ) -> List[Dict]:
         """
-        统一的资源搜索方法，支持电影和电视剧
-        按优先级尝试所有启用的搜索源，第一个有结果的就返回
-        搜索优先级: 默认 Nullbr > HDHive > PanSou，支持通过配置自定义排序
+        统一的聚合资源搜索方法，支持电影和电视剧
+        按优先级遍历所有启用的搜索源，聚合各源结果返回（每个结果带 _source 标签）
+
+        v1.7.3 起不再"第一个有结果的源就返回"——渠道是否成功由上层按
+        真实转存结果判定，全失败时需继续消费后续渠道的结果。
 
         注意：此方法主要供电影订阅使用。电视剧订阅使用 search_single_source 进行逐源搜索。
 
         :param mediainfo: 媒体信息
         :param media_type: 媒体类型（MOVIE 或 TV）
         :param season: 季号（电视剧必需）
-        :return: 115网盘资源列表
+        :return: 115网盘资源列表（按源优先级拼接，各结果带 _source 字段）
         """
         sources = self.get_enabled_sources()
 
+        aggregated: List[Dict] = []
         for source in sources:
-            results = self.search_single_source(source, mediainfo, media_type, season)
+            results = self.search_single_source(source, mediainfo, media_type, season, tag_source=True)
             if results:
-                return results
+                aggregated.extend(results)
             else:
                 # 打印回退日志
                 remaining = sources[sources.index(source) + 1:]
                 if remaining:
                     logger.info(f"{source.capitalize()} 未找到资源，将回退到 {'/'.join([s.capitalize() for s in remaining])} 搜索")
 
-        return []
+        return aggregated
 
     def search_single_source(
         self,
         source: str,
         mediainfo: MediaInfo,
         media_type: MediaType,
-        season: Optional[int] = None
+        season: Optional[int] = None,
+        tag_source: bool = False
     ) -> List[Dict]:
         """
         使用指定的单一搜索源查询资源
@@ -168,22 +173,29 @@ class SearchHandler:
         :param mediainfo: 媒体信息
         :param media_type: 媒体类型
         :param season: 季号（电视剧时使用）
+        :param tag_source: 是否给每个结果打上 _source 渠道标签（渠道级回退统计用）
         :return: 115网盘资源列表
         """
         if source == "nullbr":
-            return self._search_nullbr(mediainfo, media_type, season)
+            results = self._search_nullbr(mediainfo, media_type, season)
         elif source == "hdhive":
-            return self._search_hdhive(mediainfo, media_type, season)
+            results = self._search_hdhive(mediainfo, media_type, season)
         elif source == "pansou":
             if media_type == MediaType.MOVIE:
-                return self._search_pansou_movie(mediainfo)
+                results = self._search_pansou_movie(mediainfo)
             else:
-                return self._search_pansou_tv(mediainfo, season)
+                results = self._search_pansou_tv(mediainfo, season)
         elif source == "kdocs":
-            return self._search_kdocs(mediainfo)
+            results = self._search_kdocs(mediainfo)
         else:
             logger.warning(f"未知的搜索源: {source}")
             return []
+
+        if tag_source:
+            for item in results or []:
+                if isinstance(item, dict):
+                    item.setdefault("_source", source)
+        return results or []
 
     def _pansou_search(self, keyword: str) -> List[Dict]:
         """
