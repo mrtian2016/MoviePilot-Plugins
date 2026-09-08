@@ -8,7 +8,7 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
+# dist/  # pansearch 需要提交编译产物(MP vue插件运行时加载)
 downloads/
 eggs/
 .eggs/
