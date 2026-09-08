@@ -229,7 +229,7 @@ class SubscriptionSearchHook(OwnerDelegator):
         if progress_callback:
             progress_callback(
                 value=100,
-                text="订阅已由网盘订阅助手接管，跳过原生资源刷新",
+                text="订阅已由网盘搜索助手接管，跳过原生资源刷新",
             )
         logger.debug("接管态已跳过原生订阅资源刷新")
         return True

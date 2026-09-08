@@ -334,7 +334,7 @@ class HistoryService(OwnerDelegator):
             "cloud": "网盘路径",
             "ed2k": "ED2K",
             "magnet": "Magnet",
-        }.get(resource_type, "网盘订阅助手")
+        }.get(resource_type, "网盘搜索助手")
 
     @classmethod
     def _platform_source_path(
@@ -420,7 +420,7 @@ class HistoryService(OwnerDelegator):
             "image": str(record.get("image") or "").strip() or None,
             "status": True,
             "files": [destination] if destination else [],
-            "downloader": "网盘订阅助手",
+            "downloader": "网盘搜索助手",
             "date": str(record.get("time") or "").strip() or None,
         }
         if media_type == MediaType.MOVIE.value:
@@ -485,7 +485,7 @@ class HistoryService(OwnerDelegator):
                     if reconcile:
                         managed = db.query(TransferHistory).filter(or_(
                             TransferHistory.src.like("pansearch://%"),
-                            TransferHistory.downloader == "网盘订阅助手",
+                            TransferHistory.downloader == "网盘搜索助手",
                         )).all()
                         existing_by_src = {item.src: item for item in managed}
                         for item in managed:
@@ -591,7 +591,7 @@ class HistoryService(OwnerDelegator):
                 with SessionFactory() as db:
                     query = db.query(TransferHistory).filter(or_(
                         TransferHistory.src.like("pansearch://%"),
-                        TransferHistory.downloader == "网盘订阅助手",
+                        TransferHistory.downloader == "网盘搜索助手",
                     ))
                     if not all_managed:
                         query = query.filter(TransferHistory.src.in_(sources))

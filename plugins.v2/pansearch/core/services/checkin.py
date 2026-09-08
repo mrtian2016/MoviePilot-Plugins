@@ -524,9 +524,9 @@ class CheckinService(OwnerDelegator):
         self.post_message(
             mtype=self._notification_type,
             title=(
-                f"【网盘订阅助手】{provider.name} 签到完成"
+                f"【网盘搜索助手】{provider.name} 签到完成"
                 if record.get("success")
-                else f"【网盘订阅助手】{provider.name} 签到失败"
+                else f"【网盘搜索助手】{provider.name} 签到失败"
             ),
             text="\n".join(lines),
         )

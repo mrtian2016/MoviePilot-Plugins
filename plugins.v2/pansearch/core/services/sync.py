@@ -371,8 +371,8 @@ class SyncExecutionService(OwnerDelegator):
             progress_callback(
                 value=0,
                 text=(
-                    "订阅搜索已加入网盘订阅助手队列"
-                    if queued else "订阅搜索已合并到网盘订阅助手任务"
+                    "订阅搜索已加入网盘搜索助手队列"
+                    if queued else "订阅搜索已合并到网盘搜索助手任务"
                 ),
             )
         if start_coordinator:
@@ -497,7 +497,7 @@ class SyncExecutionService(OwnerDelegator):
             if self._notify:
                 self.post_message(
                     mtype=self._notification_type,
-                    title="【网盘订阅助手】配置错误",
+                    title="【网盘搜索助手】配置错误",
                     text="请至少启用并正确配置一个搜索源。"
                 )
             return False
@@ -648,7 +648,7 @@ class SyncExecutionService(OwnerDelegator):
             if self._notify:
                 self.post_message(
                     mtype=self._notification_type,
-                    title="【网盘订阅助手】执行完成",
+                    title="【网盘搜索助手】执行完成",
                     text="当前无订阅数据。"
                 )
             return True
@@ -756,7 +756,7 @@ class SyncExecutionService(OwnerDelegator):
             if self._notify:
                 self.post_message(
                     mtype=self._notification_type,
-                    title="【网盘订阅助手】登录失败",
+                    title="【网盘搜索助手】登录失败",
                     text=f"{self._cloud_drive.name}登录凭证可能已过期，请更新后重试。"
                 )
             return False
@@ -989,7 +989,7 @@ class SyncExecutionService(OwnerDelegator):
             if self._notify:
                 self.post_message(
                     mtype=self._notification_type,
-                    title="【网盘订阅助手】任务已停止",
+                    title="【网盘搜索助手】任务已停止",
                     text=(
                         f"已按请求停止处理，停止前共{action_name} "
                         f"{transferred_count} 个文件。"
@@ -1055,7 +1055,7 @@ class SyncExecutionService(OwnerDelegator):
         if self._notify and transferred_count == 0 and not manual_resources:
             self.post_message(
                 mtype=self._notification_type,
-                title="【网盘订阅助手】执行完成",
+                title="【网盘搜索助手】执行完成",
                 text=f"本次同步未发现需要{action_name}的新资源。"
             )
 
@@ -1177,7 +1177,7 @@ class SyncExecutionService(OwnerDelegator):
             success = False
             try:
                 if progress_callback:
-                    progress_callback(value=0, text="网盘订阅助手开始处理订阅搜索")
+                    progress_callback(value=0, text="网盘搜索助手开始处理订阅搜索")
                 success = self._do_sync(
                     subscribe_id=subscribe_id,
                     subscribe_ids=subscribe_ids,

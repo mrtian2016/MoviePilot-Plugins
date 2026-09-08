@@ -32,18 +32,18 @@ class PanSearchStatusTool(MoviePilotTool):
     name: str = "pansearch_status"
     tags: list[str] = [ToolTag.Read, ToolTag.Plugin, ToolTag.Subscription]
     description: str = (
-        "查询网盘订阅助手的运行状态、任务进度、转存汇总、缓存占用、网盘能力和最近记录。"
+        "查询网盘搜索助手的运行状态、任务进度、转存汇总、缓存占用、网盘能力和最近记录。"
         "用户询问插件是否运行、处理到哪里或统计数据时使用；所有结果均使用中文说明。"
     )
     args_schema: Type[BaseModel] = PanSearchStatusInput
 
     def get_tool_message(self, **kwargs) -> Optional[str]:
-        return "正在查询网盘订阅助手运行状态"
+        return "正在查询网盘搜索助手运行状态"
 
     async def run(self, include_recent: bool = True, **kwargs) -> str:
         plugin = _plugin()
         if not plugin:
-            return "网盘订阅助手未运行"
+            return "网盘搜索助手未运行"
         data = await self.run_blocking(
             "default",
             plugin.get_platform_overview,
@@ -67,7 +67,7 @@ class PanSearchSyncTool(MoviePilotTool):
     async def run(self, explanation: str = "", **kwargs) -> str:
         plugin = _plugin()
         if not plugin:
-            return "网盘订阅助手未运行"
+            return "网盘搜索助手未运行"
         result = plugin.start_platform_sync()
         return str(result.get("message") or ("启动成功" if result.get("success") else "启动失败"))
 
@@ -107,7 +107,7 @@ class PanSearchLinksTool(MoviePilotTool):
     ) -> str:
         plugin = _plugin()
         if not plugin:
-            return "网盘订阅助手未运行"
+            return "网盘搜索助手未运行"
         if not resource_links and not selection_id:
             return "请提供资源链接，或提供上次返回的 selection_id 与已选 TMDB ID"
         if media_type and media_type not in {"movie", "tv"}:
@@ -136,7 +136,7 @@ class PanSearchCheckinTool(MoviePilotTool):
     name: str = "pansearch_checkin"
     tags: list[str] = [ToolTag.Write, ToolTag.Plugin]
     description: str = (
-        "立即执行网盘订阅助手签到。可指定渠道，省略时签到全部已启用渠道。"
+        "立即执行网盘搜索助手签到。可指定渠道，省略时签到全部已启用渠道。"
         "normal 为普通签到；gambler/lucky 为渠道配置的其他签到模式。"
     )
     args_schema: Type[BaseModel] = PanSearchCheckinInput
@@ -152,7 +152,7 @@ class PanSearchCheckinTool(MoviePilotTool):
     ) -> str:
         plugin = _plugin()
         if not plugin:
-            return "网盘订阅助手未运行"
+            return "网盘搜索助手未运行"
         result = await self.run_blocking(
             "web",
             plugin.run_quick_checkin,
@@ -166,7 +166,7 @@ class PanSearchCheckinHistoryTool(MoviePilotTool):
     name: str = "pansearch_checkin_history"
     tags: list[str] = [ToolTag.Read, ToolTag.Plugin]
     description: str = (
-        "按渠道列举网盘订阅助手的签到详情，包括执行时间、状态、模式、积分变化、"
+        "按渠道列举网盘搜索助手的签到详情，包括执行时间、状态、模式、积分变化、"
         "当前积分和累计签到天数。不会返回 HTTP、错误码或验证码等内部信息。"
     )
     args_schema: Type[BaseModel] = PanSearchCheckinHistoryInput
@@ -182,7 +182,7 @@ class PanSearchCheckinHistoryTool(MoviePilotTool):
     ) -> str:
         plugin = _plugin()
         if not plugin:
-            return "网盘订阅助手未运行"
+            return "网盘搜索助手未运行"
         result = await self.run_blocking(
             "default",
             plugin.list_checkin_details,
@@ -289,7 +289,7 @@ class PanSearchResourceSearchTool(MoviePilotTool):
     ) -> str:
         plugin = _plugin()
         if not plugin:
-            return "网盘订阅助手未运行或智能体功能已关闭"
+            return "网盘搜索助手未运行或智能体功能已关闭"
         title = str(title or "").strip()
         media_type = str(media_type or "").strip().lower()
         if not subscribe_id and not title:
@@ -346,7 +346,7 @@ class PanSearchResourceSelectTool(MoviePilotTool):
     ) -> str:
         plugin = _plugin()
         if not plugin:
-            return "网盘订阅助手未运行或智能体功能已关闭"
+            return "网盘搜索助手未运行或智能体功能已关闭"
         result = await self.run_blocking(
             "storage",
             plugin.select_platform_resources,
@@ -361,21 +361,21 @@ class PanSearchCacheClearTool(MoviePilotTool):
     name: str = "pansearch_clear_cache"
     tags: list[str] = [ToolTag.Write, ToolTag.Admin, ToolTag.Plugin, ToolTag.System]
     description: str = (
-        "清理网盘订阅助手的搜索、候选资源、网盘分享和路径等运行缓存。"
+        "清理网盘搜索助手的搜索、候选资源、网盘分享和路径等运行缓存。"
         "仅在用户明确要求清理缓存并确认后调用；不会删除订阅、历史记录或网盘文件。"
     )
     require_admin: bool = True
     args_schema: Type[BaseModel] = PanSearchCacheClearInput
 
     def get_tool_message(self, **kwargs) -> Optional[str]:
-        return "正在清理网盘订阅助手缓存"
+        return "正在清理网盘搜索助手缓存"
 
     async def run(self, confirm: bool = False, **kwargs) -> str:
         if not confirm:
             return "请先向用户确认是否清理缓存，确认后将 confirm 设为 true"
         plugin = _plugin()
         if not plugin:
-            return "网盘订阅助手未运行或智能体功能已关闭"
+            return "网盘搜索助手未运行或智能体功能已关闭"
         result = await self.run_blocking("storage", plugin.api_vue_clear_cache)
         return json.dumps(result, ensure_ascii=False, indent=2, default=str)
 
@@ -384,19 +384,19 @@ class PanSearchPerformanceTool(MoviePilotTool):
     name: str = "pansearch_performance"
     tags: list[str] = [ToolTag.Read, ToolTag.Plugin, ToolTag.System]
     description: str = (
-        "查询网盘订阅助手当前任务的排队时间、运行耗时、进度、转存吞吐、"
+        "查询网盘搜索助手当前任务的排队时间、运行耗时、进度、转存吞吐、"
         "搜索源请求与缓存命中情况，以及同步阶段耗时。用户询问运行效率、"
         "任务是否卡住、搜索耗时或缓存效果时使用，并用中文汇总结论。"
     )
     args_schema: Type[BaseModel] = PanSearchPerformanceInput
 
     def get_tool_message(self, **kwargs) -> Optional[str]:
-        return "正在汇总网盘订阅助手运行性能"
+        return "正在汇总网盘搜索助手运行性能"
 
     async def run(self, include_tasks: bool = True, **kwargs) -> str:
         plugin = _plugin()
         if not plugin:
-            return "网盘订阅助手未运行或智能体功能已关闭"
+            return "网盘搜索助手未运行或智能体功能已关闭"
         result = plugin.get_runtime_performance(include_tasks=include_tasks)
         return json.dumps(result, ensure_ascii=False, indent=2, default=str)
 
@@ -405,7 +405,7 @@ class PanSearchConfigUpdateTool(MoviePilotTool):
     name: str = "pansearch_update_config"
     tags: list[str] = [ToolTag.Write, ToolTag.Admin, ToolTag.Plugin, ToolTag.Settings]
     description: str = (
-        "修改网盘订阅助手允许智能体调整的非敏感配置，包括侧栏、智能体开关、通知、"
+        "修改网盘搜索助手允许智能体调整的非敏感配置，包括侧栏、智能体开关、通知、"
         "搜索缓存和并发性能参数。只传需要修改的字段；不支持 Cookie、账号凭据、"
         "站点接管、路径、Webhook 或解锁配置。修改前应向用户说明字段和值。"
     )
@@ -413,12 +413,12 @@ class PanSearchConfigUpdateTool(MoviePilotTool):
     args_schema: Type[BaseModel] = PanSearchConfigUpdateInput
 
     def get_tool_message(self, **kwargs) -> Optional[str]:
-        return "正在修改网盘订阅助手白名单配置"
+        return "正在修改网盘搜索助手白名单配置"
 
     async def run(self, **kwargs) -> str:
         plugin = _plugin()
         if not plugin:
-            return "网盘订阅助手未运行或智能体功能已关闭"
+            return "网盘搜索助手未运行或智能体功能已关闭"
         updates = {
             key: value
             for key, value in kwargs.items()

@@ -40,7 +40,7 @@ class HistoryApi(OwnerDelegator):
         finally:
             sync_lock.release()
         logger.info(
-            f"网盘订阅助手历史记录已清理：删除 {result['deleted']} 条，"
+            f"网盘搜索助手历史记录已清理：删除 {result['deleted']} 条，"
             f"保留 {result['retained']} 条，强制清理={'是' if force else '否'}"
         )
         message = f"已清理 {result['deleted']} 条历史记录"

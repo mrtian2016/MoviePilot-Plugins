@@ -429,7 +429,7 @@ class MoviePilotRegistration(OwnerDelegator):
         if not self._enabled:
             return []
         return [
-            {"key": "overview", "name": "网盘订阅助手"},
+            {"key": "overview", "name": "网盘搜索助手"},
             {"key": "checkin", "name": "签到概览"},
         ]
 
@@ -440,7 +440,7 @@ class MoviePilotRegistration(OwnerDelegator):
             return None
         dashboards = {
             "overview": {
-                "title": "网盘订阅助手",
+                "title": "网盘搜索助手",
                 "subtitle": "订阅任务与转存概览",
                 "dashboard": "overview",
             },
@@ -592,7 +592,7 @@ class MoviePilotRegistration(OwnerDelegator):
             try:
                 services.append({
                     "id": "PanSearch",
-                    "name": "网盘订阅助手服务",
+                    "name": "网盘搜索助手服务",
                     "trigger": CronTrigger.from_crontab(self._cron),
                     "func": self.sync_subscribes,
                     "kwargs": {}
@@ -601,7 +601,7 @@ class MoviePilotRegistration(OwnerDelegator):
                 logger.warning(f"Cron 表达式无效：{self._cron}，将回退默认 0 18-23 * * *。错误：{e}")
                 services.append({
                     "id": "PanSearch",
-                    "name": "网盘订阅助手服务",
+                    "name": "网盘搜索助手服务",
                     "trigger": CronTrigger.from_crontab("0 18-23 * * *"),
                     "func": self.sync_subscribes,
                     "kwargs": {}
@@ -609,7 +609,7 @@ class MoviePilotRegistration(OwnerDelegator):
         else:
             services.append({
                 "id": "PanSearch",
-                "name": "网盘订阅助手服务",
+                "name": "网盘搜索助手服务",
                 "trigger": CronTrigger.from_crontab("0 18-23 * * *"),
                 "func": self.sync_subscribes,
                 "kwargs": {}

@@ -3365,8 +3365,8 @@ class SyncHandler:
     ) -> None:
         """按普通转存、跨盘转存和洗版分别发送聚合后的完成通知。"""
         kind_config = {
-            "transfer": ("【网盘订阅助手】转存完成", "转存"),
-            "cross_transfer": ("【网盘订阅助手】跨盘转存完成", "跨盘转存"),
+            "transfer": ("【网盘搜索助手】转存完成", "转存"),
+            "cross_transfer": ("【网盘搜索助手】跨盘转存完成", "跨盘转存"),
             "upgrade": ("【网盘洗版】洗版完成", "洗版"),
         }
         grouped: Dict[str, List[Dict[str, Any]]] = {}

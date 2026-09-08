@@ -933,7 +933,7 @@ class PluginEventHandler(OwnerDelegator):
             event_data.cancel = True
             event_data.source = "PanSearch-平台资源下载拦截"
             event_data.reason = (
-                f"订阅{sub_name}已由网盘订阅助手接管，"
+                f"订阅{sub_name}已由网盘搜索助手接管，"
                 f"已拦截平台资源下载：{torrent.title}"
             )
             logger.debug(

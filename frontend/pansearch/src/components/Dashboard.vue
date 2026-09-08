@@ -94,7 +94,7 @@ let runtimeStreamDisabled = false;
 const attrs = computed(() => props.config?.attrs || {});
 const dashboardType = computed(() => props.config?.key || attrs.value.dashboard || "overview");
 const isCheckinDashboard = computed(() => dashboardType.value === "checkin");
-const cardTitle = computed(() => attrs.value.title || "网盘订阅助手");
+const cardTitle = computed(() => attrs.value.title || "网盘搜索助手");
 const cardSubtitle = computed(() => attrs.value.subtitle || "订阅任务与转存概览");
 const cardFlat = computed(() => attrs.value.border === false);
 const refreshSeconds = computed(() => {

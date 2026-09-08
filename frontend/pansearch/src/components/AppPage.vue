@@ -6,7 +6,7 @@
           <v-icon icon="mdi-cloud-sync-outline" size="23" />
         </v-avatar>
         <div>
-          <h1>网盘订阅助手</h1>
+          <h1>网盘搜索助手</h1>
           <p>{{ runtimeSummary }}</p>
         </div>
       </div>

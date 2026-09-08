@@ -3,7 +3,7 @@
     <v-card flat class="border rounded page-shell">
       <v-card-title class="page-header d-flex align-center ga-1 px-3 py-2 bg-primary-lighten-5">
         <v-icon icon="mdi-cloud-sync-outline" color="primary" size="small" class="mr-1" />
-        <span class="page-title text-subtitle-1">网盘订阅助手</span>
+        <span class="page-title text-subtitle-1">网盘搜索助手</span>
         <v-spacer />
         <v-btn
           class="header-action"

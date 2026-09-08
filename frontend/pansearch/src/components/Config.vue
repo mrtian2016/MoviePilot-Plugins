@@ -3,7 +3,7 @@
     <v-card flat class="border rounded config-shell">
       <v-card-title class="config-header d-flex align-center ga-1 px-3 py-2 bg-primary-lighten-5">
         <v-icon icon="mdi-cloud-cog-outline" color="primary" size="small" class="mr-1" />
-        <span class="config-title text-subtitle-1">网盘订阅助手</span>
+        <span class="config-title text-subtitle-1">网盘搜索助手</span>
         <v-spacer />
         <v-btn
           v-if="showSwitch"
@@ -509,7 +509,7 @@ const config = reactive(JSON.parse(JSON.stringify(props.initialConfig || {})))
 
 function normalizeAutoSubscribeYears(target) {
   const currentYear = new Date().getFullYear();
-  if (!String(target.auto_subscribe_username || "").trim()) target.auto_subscribe_username = "网盘订阅助手"
+  if (!String(target.auto_subscribe_username || "").trim()) target.auto_subscribe_username = "网盘搜索助手"
   ;
   [
     "auto_subscribe_douban_min_year",

@@ -1,5 +1,5 @@
 """
-网盘订阅助手插件
+网盘搜索助手插件
 结合订阅功能，自动搜索网盘资源并同步缺失内容
 """
 import copy
@@ -106,7 +106,7 @@ _COMPONENT_TYPES = (
 
 
 class PanSearch(_PluginBase):
-    """网盘订阅助手插件。"""
+    """网盘搜索助手插件。"""
 
     # 插件名称
     plugin_name = "网盘搜索助手"
@@ -115,7 +115,7 @@ class PanSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/odomu/MoviePilot-Plugins/main/icons/cloud.png"
     # 插件版本
-    plugin_version = "1.3.5-wk1"
+    plugin_version = "1.4.0"
     # 插件作者
     plugin_author = "odomu"
     # 作者主页

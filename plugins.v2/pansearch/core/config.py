@@ -13,7 +13,7 @@ from app.schemas.types import MediaType
 
 from .media import tmdb_id_of
 
-DEFAULT_AUTO_SUBSCRIBE_USERNAME = "网盘订阅助手"
+DEFAULT_AUTO_SUBSCRIBE_USERNAME = "网盘搜索助手"
 
 
 class UIConfig:

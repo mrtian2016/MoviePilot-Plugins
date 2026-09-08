@@ -86,7 +86,7 @@ class PlatformRuleService(OwnerDelegator):
             resource_by_url = {}
             for index, resource in enumerate(resources):
                 title = self._resource_filter_title(resource)
-                page_url = f"https://cloudsubscribe.invalid/resource/{index}"
+                page_url = f"https://pansearch.invalid/resource/{index}"
                 torrents.append(TorrentInfo(
                     title=title or f"resource-{index}",
                     description=str(resource.get("description") or ""),
@@ -168,7 +168,7 @@ class PlatformRuleService(OwnerDelegator):
         by_url = {}
         size_by_url = {}
         for index, item in enumerate(candidates):
-            page_url = f"https://cloudsubscribe.invalid/file/{index}"
+            page_url = f"https://pansearch.invalid/file/{index}"
             size_bytes = max(
                 0, int(StringUtils.num_filesize(item.get("size")) or 0)
             )

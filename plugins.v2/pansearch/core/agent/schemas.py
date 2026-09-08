@@ -137,7 +137,7 @@ class PanSearchResourceSelectInput(BaseModel):
 class PanSearchCacheClearInput(BaseModel):
     confirm: bool = Field(
         default=False,
-        description="用户是否已明确确认清理网盘订阅助手缓存；只有明确要求清理时才传 true",
+        description="用户是否已明确确认清理网盘搜索助手缓存；只有明确要求清理时才传 true",
     )
 
 
@@ -155,7 +155,7 @@ class PanSearchConfigUpdateInput(BaseModel):
     )
     agent_enabled: Optional[bool] = Field(
         default=None,
-        description="是否启用网盘订阅助手智能体工具",
+        description="是否启用网盘搜索助手智能体工具",
     )
     notify: Optional[bool] = Field(
         default=None,
