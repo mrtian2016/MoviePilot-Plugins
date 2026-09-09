@@ -663,5 +663,165 @@ class TestIterDirectory405Fallback(unittest.TestCase):
         self.assertIn("max_retries=0", source)
 
 
+class _FinalizeEntrySentinel(Exception):
+    """同轮落入成功收尾入口时抛出的哨兵。"""
+
+
+class _LivelockSentinel(Exception):
+    """不应出现的重试/失败路径（活锁回归）哨兵。"""
+
+
+class TestTimeoutReadySameRoundFinalize(unittest.TestCase):
+    """T2 修复回归：超时终审 "ready" 必须同轮落入成功收尾。
+
+    历史缺陷：ready 分支只置 task_done=True，随后仍命中外层 continue，
+    每轮重新超时、重新终审 ready，永远到不了整理/收尾流程（活锁）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        found = extract_methods(
+            "handlers/sync/postprocess.py",
+            {"monitor_offline_strm_tasks"},
+        )
+        cls._source = found["monitor_offline_strm_tasks"]
+
+    def _make_handler(self, item, finalize_step, finalize_detail=None):
+        class Stub:
+            pass
+
+        stub = Stub()
+        state = {"offline_pending_tasks": {"pending:1": item}}
+        calls = {"steps": []}
+
+        def get_data(key):
+            return state.get(key)
+
+        def save_data(key, value):
+            state[key] = value
+
+        def update_progress(
+                item, step, position, total, detail="",
+        ):
+            calls["steps"].append((step, str(detail)))
+            if (
+                    step == finalize_step
+                    and (finalize_detail is None or finalize_detail in str(detail))
+            ):
+                raise _FinalizeEntrySentinel()
+
+        def schedule_retry(item, now):
+            raise _LivelockSentinel("不应再安排重试（活锁）")
+
+        def mark_failed(*args, **kwargs):
+            raise _LivelockSentinel("不应判定失败")
+
+        class _DirLookup:
+            checked = False
+            directory_id = None
+
+        class _CloudDirectories:
+            def resolve_directory(self, cloud_dir):
+                return _DirLookup()
+
+            def list_directory(self, directory_id):
+                raise _LivelockSentinel("不应列举目录")
+
+        namespace = {
+            "logger": _StubLogger(),
+            "time": time,
+            "uuid": __import__("uuid"),
+            "copy": __import__("copy"),
+            "Dict": typing.Dict,
+            "Any": typing.Any,
+            "List": typing.List,
+            "Optional": typing.Optional,
+            "Set": typing.Set,
+            "Tuple": typing.Tuple,
+            "SessionFactory": None,
+            "Subscribe": None,
+        }
+        exec(self._source, namespace)
+        _bind(stub, namespace, "monitor_offline_strm_tasks")
+        stub._get_data = get_data
+        stub._save_data = save_data
+        stub._offline_pending_lock = __import__("threading").Lock()
+        stub._OFFLINE_PENDING_KEY = "offline_pending_tasks"
+        stub._OFFLINE_MONITOR_LEASE_SECONDS = 300
+        stub._OFFLINE_TIMEOUT = 1800
+        stub._cloud_directories = _CloudDirectories()
+        stub._cloud_query = object()
+        stub._cloud_mutations = object()
+        stub._cloud_batch_mutations = None
+        stub._offline_tasks = None
+        stub._due_pending_keys = (
+            lambda pending, now, force=False, pending_keys=None: ["pending:1"]
+        )
+        stub._save_offline_pending = lambda pending: None
+        stub._update_postprocess_progress = update_progress
+        stub._offline_timeout_file_verdict = (
+            lambda item, now, snapshot, subscribe_cache=None: "ready"
+        )
+        stub._offline_timeout_should_defer = lambda tasks_valid, verdict: False
+        def finalize_magnet_package(item, pending_key, subscribe_cache=None):
+            raise _FinalizeEntrySentinel()
+
+        stub._schedule_finalize_retry = schedule_retry
+        stub._finalize_magnet_package = finalize_magnet_package
+        stub._mark_offline_history_status = mark_failed
+        stub._add_offline_blacklist = mark_failed
+        stub._cleanup_failed_offline_task = lambda item, reason: None
+        stub._notify_finalize_dead = lambda *args, **kwargs: None
+        stub._FINALIZE_DEAD_REASON = "后处理连续失败 {} 次"
+        stub._organize_after_transfer = False
+        stub.calls = calls
+        return stub
+
+    def _base_item(self, task_type, task_id):
+        return {
+            "task_type": task_type,
+            "task_id": task_id,
+            "file_name": "Show.2020.S01E01.mkv",
+            "created_at": time.time() - 4000,
+            "subscribe_id": 0,
+            "staging_dir": "/pansearch/staging",
+            "staging_name": "Show.2020.S01E01.mkv",
+            "cloud_dir": "/media",
+            "share_url": "",
+        }
+
+    def _run(self, handler, tasks):
+        return handler.monitor_offline_strm_tasks(
+            offline_tasks=tasks, offline_tasks_valid=True,
+        )
+
+    def test_magnet_ready_falls_through_to_organize(self):
+        item = self._base_item("magnet", "ABC123")
+        handler = self._make_handler(item, finalize_step="organize")
+        # ready 终审后必须同轮进入 "整理 Magnet 下载文件" 收尾入口。
+        with self.assertRaises(_FinalizeEntrySentinel):
+            self._run(handler, tasks=[])
+        self.assertIn(
+            ("organize", "整理 Magnet 下载文件"), handler.calls["steps"]
+        )
+
+    def test_ed2k_task_ready_skips_retry_and_finalizes(self):
+        item = self._base_item("ed2k", "XYZ789")
+        handler = self._make_handler(item, finalize_step="locate",
+                                     finalize_detail="定位")
+        # 任务存在但未完成、已超时、终审 ready：不得走重试，须落入共享收尾。
+        with self.assertRaises(_FinalizeEntrySentinel):
+            self._run(handler, tasks=[{"id": "XYZ789"}])
+
+    def test_ed2k_fallback_ready_falls_through_to_finalize(self):
+        item = self._base_item("ed2k", "XYZ789")
+        handler = self._make_handler(item, finalize_step="locate",
+                                     finalize_detail="定位")
+        # 任务句柄缺失（tasks_valid=True 且目录列举失败不判失败）、超时、
+        # 终审 ready：同样必须同轮落入共享收尾。
+        with self.assertRaises(_FinalizeEntrySentinel):
+            self._run(handler, tasks=[])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

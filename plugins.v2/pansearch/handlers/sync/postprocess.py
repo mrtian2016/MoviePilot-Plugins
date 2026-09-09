@@ -1007,6 +1007,7 @@ class PostprocessService(OwnerDelegator):
                         failed += 1
                         continue
                     if not task_done:
+                        finalize_now = False
                         if now - created_at >= self._OFFLINE_TIMEOUT:
                             verdict = self._offline_timeout_file_verdict(
                                 item, now, directory_snapshot,
@@ -1017,6 +1018,7 @@ class PostprocessService(OwnerDelegator):
                                 continue
                             if verdict == "ready":
                                 task_done = True
+                                finalize_now = True
                             elif self._offline_timeout_should_defer(
                                 tasks_valid, verdict
                             ):
@@ -1035,7 +1037,9 @@ class PostprocessService(OwnerDelegator):
                                 continue
                         else:
                             self._schedule_finalize_retry(item, now)
-                        continue
+                        # 终审 "ready" 时同轮直接落入下方整理收尾，否则重试下一轮。
+                        if not finalize_now:
+                            continue
                     update_progress(
                         item, pending_key, "organize", "整理 Magnet 下载文件"
                     )
@@ -1076,6 +1080,7 @@ class PostprocessService(OwnerDelegator):
                         failed += 1
                         continue
                     if task is not None and not task_done:
+                        finalize_now = False
                         if now - created_at >= self._OFFLINE_TIMEOUT:
                             verdict = self._offline_timeout_file_verdict(
                                 item, now, directory_snapshot,
@@ -1086,6 +1091,7 @@ class PostprocessService(OwnerDelegator):
                                 continue
                             if verdict == "ready":
                                 task_done = True
+                                finalize_now = True
                                 item.setdefault("download_completed_at", now)
                             elif self._offline_timeout_should_defer(
                                 tasks_valid, verdict
@@ -1103,10 +1109,14 @@ class PostprocessService(OwnerDelegator):
                                 pending.pop(pending_key, None)
                                 failed += 1
                                 continue
+                            # 终审 "ready" 时同轮落入下方统一收尾，不再重试。
+                            if not finalize_now:
+                                continue
+                        # 未超时或接口暂缓时保留进度快照并安排下一轮重试。
+                        if not finalize_now:
+                            self._persist_offline_progress(item, task)
+                            self._schedule_finalize_retry(item, now)
                             continue
-                        self._persist_offline_progress(item, task)
-                        self._schedule_finalize_retry(item, now)
-                        continue
                     if not task_done and task is None and tasks_valid:
                         staging_dir = str(
                             item.get("staging_dir") or item.get("cloud_dir") or "/"
@@ -1121,6 +1131,7 @@ class PostprocessService(OwnerDelegator):
                             failed += 1
                             continue
                     if not task_done:
+                        finalize_now = False
                         if now - created_at >= self._OFFLINE_TIMEOUT:
                             verdict = self._offline_timeout_file_verdict(
                                 item, now, directory_snapshot,
@@ -1131,6 +1142,7 @@ class PostprocessService(OwnerDelegator):
                                 continue
                             if verdict == "ready":
                                 task_done = True
+                                finalize_now = True
                                 item.setdefault("download_completed_at", now)
                             elif self._offline_timeout_should_defer(
                                 tasks_valid, verdict
@@ -1148,9 +1160,13 @@ class PostprocessService(OwnerDelegator):
                                 pending.pop(pending_key, None)
                                 failed += 1
                                 continue
+                            # 终审 "ready" 时同轮落入下方统一收尾，不再重试。
+                            if not finalize_now:
+                                continue
+                        else:
+                            self._schedule_finalize_retry(item, now)
+                        if not finalize_now:
                             continue
-                        self._schedule_finalize_retry(item, now)
-                        continue
                     item.setdefault("download_completed_at", now)
 
                 already_moved = bool(item.get("moved_at"))
