@@ -115,9 +115,10 @@ class PanSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/odomu/MoviePilot-Plugins/main/icons/cloud.png"
     # 插件版本
-    # v1.5.1：修复离线任务假失败（真实任务句柄登记、超时前文件终审、接口抖动暂缓判定），
-    # 新增下载进度展示、存量核对自动回填、死链防重复转存。
-    plugin_version = "1.5.1"
+    # v1.5.2：紧急热修契约回归——v1.5.1 给 offline_download 契约新增
+    # get_offline_tasks 后，123/光鸭离线服务未实现导致插件初始化崩溃，
+    # 现补齐契约方法并新增六大 provider 契约回归测试。
+    plugin_version = "1.5.2"
     # 插件作者
     plugin_author = "odomu"
     # 作者主页

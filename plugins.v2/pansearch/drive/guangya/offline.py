@@ -202,7 +202,7 @@ class GuangyaOfflineService:
                 return [dict(task) for task in self._tasks]
 
     def get_offline_tasks(self, force: bool = False) -> List[Dict[str, Any]]:
-        """读取离线任务列表，与任务快照共享同一份缓存。"""
+        """读取离线任务列表；60 秒缓存，接口异常时降级返回缓存值。"""
         return self._load_tasks(force=force)
 
     def add_offline_download(self, url: str, save_path: str, **kwargs: Any) -> bool:
