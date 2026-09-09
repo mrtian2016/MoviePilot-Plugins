@@ -30,6 +30,13 @@ export function createPansouGroups(options = {}) {
           show: (config) => config.pansou_auth_enabled,
         },
         {
+          key: "pansou_check_enabled",
+          label: "转存前检查链接有效性",
+          hint: "转存前调用 pansou 接口预检查分享链接有效性，失效链接自动跳过；接口异常时自动回退原有流程。",
+          type: "switch",
+          cols: 4,
+        },
+        {
           key: "test_pansou",
           label: "测试搜索",
           type: "test-source",

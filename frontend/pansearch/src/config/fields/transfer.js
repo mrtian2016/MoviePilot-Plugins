@@ -54,6 +54,15 @@ export function createTransferSection(options) {
             cols: 4,
           },
           {
+            key: "max_transfer_links",
+            label: "单订阅最大转存数",
+            hint: "每个订阅累计成功转存的链接数量上限，达到后停止继续搜索和转存；留空表示不限制。",
+            type: "number",
+            min: 1,
+            max: 500,
+            cols: 4,
+          },
+          {
             key: "cross_transfer_enabled",
             label: "跨盘资源自动转存",
             type: "switch",
