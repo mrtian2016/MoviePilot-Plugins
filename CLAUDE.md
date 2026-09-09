@@ -143,6 +143,19 @@ download progress). Four tasks T1-T4, behavior spec in the round prompts.
 - tests/test_wk1_logic.py: ast-extraction unit test harness usable for
   new logic tests without importing app.*.
 
+### v1.5.1 progress (updated 2026-09-09, after T1-T3 rounds)
+- Committed: 19c9df0 (T1 real info_hash handle + progress snapshot),
+  0e933ef (T2 timeout file-exists verdict + blacklist guard),
+  df17f8e (T3 502/405 backoff retry + defer on refresh_ok=False),
+  fddefbb (T2 regression: ready verdict falls through to finalize same
+  round, livelock fix). Unit tests: tests/test_v151_offline_logic.py,
+  34 cases, all OK via `python3 -m unittest tests.test_v151_offline_logic`
+  run from plugins.v2/pansearch/.
+- Remaining: T4 (reconcile failed/processing history every round with
+  notification; deterministic 4100018 dead-link single-resource blacklist)
+  and version wrap-up (plugin_version 1.5.1 + package.v2.json PanSearch
+  entry version/history). Do NOT touch dist/ this round.
+
 ### v1.5.1 guardrails
 - Do NOT regress v1.5.0 F1-F4 (pansou prefilter, max_transfer_links,
   organize switch, kdocs cache). Do NOT touch plugins.v2/p115subsearch/.
