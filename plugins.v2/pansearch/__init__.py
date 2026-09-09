@@ -115,7 +115,7 @@ class PanSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/odomu/MoviePilot-Plugins/main/icons/cloud.png"
     # 插件版本
-    plugin_version = "1.4.0"
+    plugin_version = "1.5.0"
     # 插件作者
     plugin_author = "odomu"
     # 作者主页
@@ -1396,9 +1396,16 @@ class PanSearch(_PluginBase):
             if not self._pinglian_username or not self._pinglian_password:
                 logger.warning("盘链已启用但未配置网页登录账号和密码，将无法使用盘链搜索")
         if "online_docs" in self._search_source_order and self._online_docs:
+            try:
+                online_docs_cache_dir = self.get_data_path()
+            except Exception as error:
+                logger.debug(f"[PanSearch] 获取数据目录失败，在线文档缓存降级为内存模式：{error}")
+                online_docs_cache_dir = None
             self._online_docs_client = OnlineDocumentClient(
                 documents=self._online_docs,
                 proxy=proxy,
+                cache_dir=online_docs_cache_dir,
+                cache_ttl_hours=6,
             )
 
         # OpenAPI 模式初始化官方客户端；WebAPI 由搜索服务按需创建唯一客户端。

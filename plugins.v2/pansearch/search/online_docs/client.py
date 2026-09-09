@@ -1,10 +1,14 @@
 """通过腾讯文档和金山文档数据接口搜索资源链接。"""
 
 import base64
+import copy
 import json
 import re
+import threading
+import time
 import uuid
 import zlib
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -483,14 +487,118 @@ def parse_online_document(url: str, proxy: Any = None, timeout: int = 30) -> Dic
 class OnlineDocumentClient:
     """读取公开在线文档的轻量协议客户端。"""
 
-    def __init__(self, documents=None, resource_types=None, proxy=None, timeout=30):
+    _CACHE_FILE = "online_docs_cache.json"
+    _PRUNE_SECONDS = 7 * 24 * 3600
+
+    def __init__(
+        self,
+        documents=None,
+        resource_types=None,
+        proxy=None,
+        timeout=30,
+        cache_dir=None,
+        cache_ttl_hours=6,
+    ):
         self.documents = list(documents or [])
         self.resource_types = resource_types
         self.proxy = proxy
         self.timeout = timeout
+        self._cache_dir = Path(cache_dir) if cache_dir else None
+        self._cache_ttl_hours = cache_ttl_hours
+        # url -> {"saved_at": ts, "data": payload}
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._cache_lock = threading.RLock()
 
     def clear_cache(self):
+        with self._cache_lock:
+            self._cache.clear()
+        cache_path = self._cache_path()
+        if cache_path is not None:
+            try:
+                cache_path.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception as error:
+                logger.debug(f"[ONLINE_DOCS] 清理磁盘缓存失败：{error}")
         return None
 
     def read(self, url: str) -> Dict[str, Any]:
-        return parse_online_document(url, self.proxy, self.timeout)
+        ttl = float(self._cache_ttl_hours or 0) * 3600
+        with self._cache_lock:
+            memo = self._cache.get(url)
+            if memo is not None and time.time() - memo.get("saved_at", 0) < ttl:
+                return copy.deepcopy(memo.get("data"))
+        disk_entry = self._load_disk_cache(url)
+        if disk_entry is not None:
+            saved_at = disk_entry.get("saved_at", 0)
+            if time.time() - saved_at < ttl:
+                payload = disk_entry.get("data")
+                if payload is not None:
+                    with self._cache_lock:
+                        self._cache[url] = {"saved_at": saved_at, "data": payload}
+                    return copy.deepcopy(payload)
+        payload = parse_online_document(url, self.proxy, self.timeout)
+        if "error" not in payload:
+            self._save_disk_cache(url, payload)
+        return payload
+
+    def _cache_path(self) -> Optional[Path]:
+        if self._cache_dir is None:
+            return None
+        try:
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+            return self._cache_dir / self._CACHE_FILE
+        except Exception as error:
+            logger.debug(f"[ONLINE_DOCS] 创建缓存目录失败：{error}")
+            return None
+
+    def _load_disk_cache(self, url: str) -> Optional[Dict[str, Any]]:
+        cache_path = self._cache_path()
+        if cache_path is None or not cache_path.exists():
+            return None
+        with self._cache_lock:
+            try:
+                content = json.loads(cache_path.read_text(encoding="utf-8"))
+            except Exception as error:
+                logger.debug(f"[ONLINE_DOCS] 读取磁盘缓存失败：{error}")
+                return None
+            if not isinstance(content, dict):
+                return None
+            items = content.get("items")
+            if not isinstance(items, dict):
+                return None
+            entry = items.get(url)
+            if isinstance(entry, dict) and isinstance(entry.get("data"), dict):
+                return entry
+            return None
+
+    def _save_disk_cache(self, url: str, payload: Dict[str, Any]) -> None:
+        cache_path = self._cache_path()
+        if cache_path is None:
+            return
+        with self._cache_lock:
+            try:
+                try:
+                    content = json.loads(cache_path.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    content = {}
+                except Exception:
+                    content = {}
+                if not isinstance(content, dict) or not isinstance(content.get("items"), dict):
+                    content = {}
+                items = content.setdefault("items", {})
+                now = time.time()
+                items[url] = {"saved_at": now, "data": payload}
+                # 清理超过 7 天的旧条目，避免缓存文件无限增长。
+                for key in list(items):
+                    entry = items.get(key)
+                    if isinstance(entry, dict) and now - entry.get("saved_at", 0) > self._PRUNE_SECONDS:
+                        items.pop(key, None)
+                content["items"] = items
+                tmp_path = cache_path.with_name(cache_path.name + ".tmp")
+                tmp_path.write_text(
+                    json.dumps(content, ensure_ascii=False), encoding="utf-8"
+                )
+                tmp_path.replace(cache_path)
+            except Exception as error:
+                logger.debug(f"[ONLINE_DOCS] 写入磁盘缓存失败：{error}")
