@@ -288,8 +288,8 @@ class OfflineDownloadService(OwnerDelegator):
             for task in self.get_offline_tasks()
         )
 
-    def add_offline_download(self, offline_url: str, save_path: str, target_name: str = None) -> bool:
-        """将 ED2K 或 Magnet 资源提交到 115 离线下载。"""
+    def add_offline_download(self, offline_url: str, save_path: str, target_name: str = None) -> str:
+        """将 ED2K 或 Magnet 资源提交到 115 离线下载，成功返回任务 info_hash。"""
         success_hashes, _ = self.add_offline_downloads_batch(
             [{"url": offline_url, "target_name": target_name}],
             save_path=save_path,
@@ -300,7 +300,9 @@ class OfflineDownloadService(OwnerDelegator):
             if self.is_ed2k_url(offline_url)
             else self.parse_magnet_link(offline_url)
         )
-        return bool(file_info and file_info["hash"] in success_hashes)
+        if not file_info or file_info["hash"] not in success_hashes:
+            return ""
+        return str(file_info["hash"]).upper()
 
     def add_offline_downloads_batch(
             self,

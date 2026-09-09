@@ -135,6 +135,96 @@ class PostprocessService(OwnerDelegator):
                 f"Magnet 匹配失败后清理下载文件失败：{task_id}，{error}"
             )
 
+    def _persist_offline_progress(
+            self, item: Dict[str, Any], task: Dict[str, Any]
+    ) -> None:
+        """任务仍在下载时持久化轻量进度快照，供前端展示非空状态。"""
+        try:
+            status_text = str(task.get("status_text") or "").strip() or "处理中"
+            percent = max(0.0, min(float(task.get("percent") or 0.0), 100.0))
+            snapshot = {
+                "status_text": status_text,
+                "percent": round(percent, 1),
+                "state": str(task.get("state") or "processing"),
+                "updated_at": time.time(),
+            }
+            if item.get("offline_progress") == snapshot:
+                return
+            item["offline_progress"] = snapshot
+            self._sync_pending_history_status(item, f"{status_text} {percent:.0f}%")
+        except Exception as error:
+            logger.debug(f"记录离线下载进度快照失败：{error}")
+
+    def _sync_pending_history_status(
+            self, item: Dict[str, Any], status: str
+    ) -> None:
+        """把进度快照同步到等待该 pending 键的历史记录，避免状态为空。"""
+        if not self._get_data or not self._save_data or not status:
+            return
+        try:
+            with self._offline_pending_lock:
+                history = self._get_data("history") or []
+                changed = False
+                for record in history:
+                    if str(record.get("finalize_key") or "") != str(
+                            item.get("pending_key") or ""):
+                        continue
+                    if str(record.get("status") or "") in {"成功", "失败"}:
+                        continue
+                    record["status"] = status
+                    changed = True
+                if changed:
+                    self._save_data("history", history)
+        except Exception as error:
+            logger.debug(f"同步离线进度到历史记录失败：{error}")
+
+    def _offline_timeout_file_verdict(
+            self,
+            item: Dict[str, Any],
+            now: float,
+            directory_snapshot,
+            subscribe_cache: Optional[Dict[int, Any]] = None,
+    ) -> Optional[str]:
+        """超时判失败前的文件已存在终审。
+
+        复用分享分支的反查机制（staging 目录与最终目录按文件名和
+        source_sha1 匹配）：文件已就绪返回 "ready"（转成功终态流程）；
+        目录列举失败返回 "defer"（安排重试）；未找到返回 "missing"。
+        """
+        staging_dir = str(
+            item.get("staging_dir") or item.get("cloud_dir") or "/"
+        ).rstrip("/") or "/"
+        staging_name = str(
+            item.get("staging_name") or item.get("file_name") or ""
+        )
+        source_sha1 = str(item.get("source_sha1") or "").upper()
+        final_dir = str(item.get("cloud_dir") or "/").rstrip("/") or "/"
+        directories = [staging_dir]
+        if final_dir != staging_dir:
+            directories.append(final_dir)
+        for cloud_dir in directories:
+            directory_valid, file_index = directory_snapshot(cloud_dir)
+            if not directory_valid:
+                return "defer"
+            if not file_index:
+                continue
+            candidate = file_index.get(staging_name)
+            if not candidate and source_sha1:
+                candidate = next(
+                    (
+                        value for value in file_index.values()
+                        if str(value.sha1 or "").upper() == source_sha1
+                    ),
+                    None,
+                )
+            if candidate:
+                logger.info(
+                    f"离线任务超时但文件已在网盘就绪，转成功终态："
+                    f"{cloud_dir}/{getattr(candidate, 'name', '') or staging_name}"
+                )
+                return "ready"
+        return "missing"
+
     @staticmethod
     def _upgrade_backup_name(file_name: str, task_id: str) -> str:
         """仅在原文件名后追加短任务 ID，避免隐藏文件和冗长标记。"""
@@ -895,6 +985,8 @@ class PostprocessService(OwnerDelegator):
                 if task_type == "magnet":
                     task = task_map.get(str(item.get("task_id") or "").upper())
                     task_done = bool(task and task.get("completed"))
+                    if task and not task_done:
+                        self._persist_offline_progress(item, task)
                     if task and bool(task.get("failed")):
                         reason = "Magnet 离线下载失败"
                         self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)

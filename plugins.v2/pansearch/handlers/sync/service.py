@@ -2087,16 +2087,34 @@ class SyncHandler:
             pending = self._get_data(self._OFFLINE_PENDING_KEY) or {}
             if pending_key in pending:
                 return pending_key
-        if not self._offline_download.add_offline_download(share_url, staging_dir):
+        submit_handle = self._offline_download.add_offline_download(
+            share_url, staging_dir
+        )
+        if not submit_handle:
             self._add_offline_blacklist(share_url, "提交离线下载失败")
             return ""
+        if not info_hash:
+            # 提交成功但本地无法解析出 info_hash：使用平台返回句柄兜底并
+            # 记录警告，避免后处理回退到 subscribe:* 级别的兜底任务ID。
+            logger.warning(
+                f"Magnet 本地未能解析 info_hash，已使用平台返回句柄："
+                f"{magnet_title or share_url}"
+            )
+        real_task_id = submit_handle or info_hash
+        # 提交后立即强制刷新一次任务列表，让后处理 task_map 能命中新任务。
+        try:
+            self._offline_download.get_offline_tasks(force=True)
+        except Exception as error:
+            logger.warning(f"115 离线任务列表刷新失败，将继续使用缓存：{error}")
+        no_handle = not bool(real_task_id)
         now = time.time()
         with self._offline_pending_lock:
             pending = self._get_data(self._OFFLINE_PENDING_KEY) or {}
             pending[pending_key] = {
                 "pending_key": pending_key,
                 "task_type": "magnet",
-                "task_id": info_hash,
+                "task_id": real_task_id,
+                "no_handle": no_handle,
                 "share_url": share_url,
                 "cloud_dir": staging_dir,
                 "file_name": str(

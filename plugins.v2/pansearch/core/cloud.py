@@ -234,7 +234,10 @@ class OfflineDownloadOperations(Protocol):
 
     def parse_magnet_link(self, url: str, **kwargs: Any) -> Dict[str, Any]: ...
 
+    # p115 实现返回任务 info_hash 字符串（失败为空串，真值语义等同成功布尔）。
     def add_offline_download(self, url: str, save_path: str, **kwargs: Any) -> bool: ...
+
+    def get_offline_tasks(self, force: bool = False) -> list[Dict[str, Any]]: ...
 
 
 @runtime_checkable
