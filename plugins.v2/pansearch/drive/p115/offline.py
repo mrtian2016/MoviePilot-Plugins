@@ -10,6 +10,7 @@ from app.log import logger
 
 from ...core import OwnerDelegator
 from ...utils import parse_magnet_metadata
+from ..common import retry_transient_call
 
 try:
     from p115client import check_response
@@ -82,13 +83,18 @@ class OfflineDownloadService(OwnerDelegator):
             refresh_revision = self._offline_task_cache_revision
 
         try:
-            rows = self.rate_limiter.call(
-                lambda: list(clouddownload_iter(
-                    self.client,
-                    cooldown=2,
-                    type="web",
-                    **self._ios_request_kwargs(app=False),
-                ))
+            rows = retry_transient_call(
+                lambda: self.rate_limiter.call(
+                    lambda: list(clouddownload_iter(
+                        self.client,
+                        cooldown=2,
+                        type="web",
+                        **self._ios_request_kwargs(app=False),
+                    )),
+                    max_retries=0,
+                ),
+                attempts=3,
+                delays=(1.0, 3.0),
             )
             tasks = [
                 self._format_offline_task(task)

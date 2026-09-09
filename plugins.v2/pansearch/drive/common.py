@@ -111,6 +111,54 @@ class DriveRateLimiter:
                 delay = min(delay * factor, 60.0)
 
 
+def error_http_status(error: BaseException) -> Optional[int]:
+    """尽力提取异常携带的 HTTP 状态码，供瞬态错误分类使用。"""
+    response = getattr(error, "response", None)
+    for value in (
+            getattr(error, "status_code", None),
+            getattr(response, "status_code", None),
+    ):
+        try:
+            if value not in (None, ""):
+                return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def is_transient_drive_error(error: BaseException) -> bool:
+    """判断网盘接口异常是否属于值得重试的瞬态抖动。
+
+    无状态码视为网络层异常（超时/连接重置）；5xx 与 429 属于服务端
+    瞬时故障；405 等其他状态码按确定性错误处理，交由调用方降级。
+    """
+    status = error_http_status(error)
+    return status is None or status >= 500 or status == 429
+
+
+def retry_transient_call(
+        func: Callable,
+        attempts: int = 3,
+        delays: Sequence[float] = (0.5, 2.0),
+) -> Any:
+    """对瞬态网盘接口异常做有界退避重试，重试耗尽后抛出原始异常。"""
+    total = max(1, int(attempts or 1))
+    for attempt in range(total):
+        try:
+            return func()
+        except Exception as error:
+            if attempt >= total - 1 or not is_transient_drive_error(error):
+                raise
+            delay = max(0.0, float(delays[min(attempt, len(delays) - 1)] or 0))
+            if delay > 0:
+                name = getattr(func, "__name__", type(func).__name__)
+                logger.debug(
+                    f"网盘请求 {name} 瞬态异常：{error}，"
+                    f"{delay:.1f} 秒后第 {attempt + 1} 次重试"
+                )
+                time.sleep(delay)
+
+
 def safe_int(value: Any) -> int:
     """将外部接口值转换为整数，空值和非法值按 0 处理。"""
     try:

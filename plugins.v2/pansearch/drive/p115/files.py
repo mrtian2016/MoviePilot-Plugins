@@ -10,7 +10,13 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 from app.core.cache import TTLCache
 from app.log import logger
 
-from ..common import create_directory_cache, normalize_path, safe_int
+from ..common import (
+    create_directory_cache,
+    error_http_status,
+    normalize_path,
+    retry_transient_call,
+    safe_int,
+)
 from ...core import OwnerDelegator
 from ...core.cloud import CloudFile, DirectoryListing, DirectoryLookup, native_dict
 from ...core.transfer import HttpFileDownloadService
@@ -207,23 +213,49 @@ class P115BatchFileMutation:
 class P115FileService(OwnerDelegator):
     DIRECTORY_PAGE_SIZE = 1000
     MUTATION_BATCH_SIZE = 1000
+    # web 渠道偶发 405，切换 ios 渠道前先做有界退避重试。
+    _ITER_RETRY_ATTEMPTS = 3
+    _ITER_RETRY_DELAYS = (0.5, 1.0)
 
     def _iter_directory(self, cid: Any, ensure_file: Optional[bool] = None):
-        """按页读取一个115目录，并让工具层处理字段标准化和响应校验。"""
-        return self.rate_limiter.call(
-            iterdir,
-            self.client,
-            cid=cid,
-            page_size=self.DIRECTORY_PAGE_SIZE,
-            show_dir=1,
-            fc_mix=0,
-            ensure_file=ensure_file,
-            app="web",
-            cooldown=self.rate_limiter.min_interval,
-            max_workers=0,
-            max_retries=0,
-            **self._ios_request_kwargs(app=False),
-        )
+        """按页读取一个115目录，并让工具层处理字段标准化和响应校验。
+
+        瞬态异常（网络抖动/5xx/429）指数退避重试；持续 405 时切换
+        ios 渠道重放同一接口，返回行结构保持一致。
+        """
+        def _fetch(**channel):
+            return self.rate_limiter.call(
+                iterdir,
+                self.client,
+                cid=cid,
+                page_size=self.DIRECTORY_PAGE_SIZE,
+                show_dir=1,
+                fc_mix=0,
+                ensure_file=ensure_file,
+                cooldown=self.rate_limiter.min_interval,
+                max_workers=0,
+                max_retries=0,
+                **channel,
+                **self._ios_request_kwargs(app=False),
+            )
+
+        try:
+            return retry_transient_call(
+                lambda: _fetch(app="web"),
+                attempts=self._ITER_RETRY_ATTEMPTS,
+                delays=self._ITER_RETRY_DELAYS,
+            )
+        except Exception as error:
+            if error_http_status(error) != 405:
+                raise
+            logger.warning(
+                f"115 目录列举持续 405，切换 ios 渠道重试：cid={cid}，{error}"
+            )
+            return retry_transient_call(
+                lambda: _fetch(app="ios"),
+                attempts=self._ITER_RETRY_ATTEMPTS,
+                delays=self._ITER_RETRY_DELAYS,
+            )
 
     def _list_child_directories(self, cid: Any) -> List[dict]:
         """只读取目录项；115 目录与文件可能混合排序，不能依赖“目录置顶”提前停止。"""

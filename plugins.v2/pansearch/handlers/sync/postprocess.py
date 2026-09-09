@@ -226,6 +226,17 @@ class PostprocessService(OwnerDelegator):
         return "missing"
 
     @staticmethod
+    def _offline_timeout_should_defer(
+            tasks_valid: bool, verdict: Optional[str]
+    ) -> bool:
+        """任务列表快照不可用时，仅凭“超时/未找到”不足以下失败终态。
+
+        快照刷新失败（tasks_valid False）且文件终审未判 ready 时，
+        超时分支必须暂缓判定，等待接口恢复后再下结论。
+        """
+        return (not tasks_valid) and verdict != "ready"
+
+    @staticmethod
     def _upgrade_backup_name(file_name: str, task_id: str) -> str:
         """仅在原文件名后追加短任务 ID，避免隐藏文件和冗长标记。"""
         source = Path(str(file_name or ""))
@@ -1006,6 +1017,14 @@ class PostprocessService(OwnerDelegator):
                                 continue
                             if verdict == "ready":
                                 task_done = True
+                            elif self._offline_timeout_should_defer(
+                                tasks_valid, verdict
+                            ):
+                                logger.warning(
+                                    f"接口异常，暂缓判定：{file_name}"
+                                )
+                                self._schedule_finalize_retry(item, now)
+                                continue
                             else:
                                 reason = "Magnet 离线下载超过 30 分钟未完成，已退出"
                                 self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
@@ -1068,6 +1087,14 @@ class PostprocessService(OwnerDelegator):
                             if verdict == "ready":
                                 task_done = True
                                 item.setdefault("download_completed_at", now)
+                            elif self._offline_timeout_should_defer(
+                                tasks_valid, verdict
+                            ):
+                                logger.warning(
+                                    f"接口异常，暂缓判定：{file_name}"
+                                )
+                                self._schedule_finalize_retry(item, now)
+                                continue
                             else:
                                 reason = "115 离线下载超过 30 分钟未完成，已退出"
                                 logger.error(f"{reason}：{file_name}")
@@ -1105,6 +1132,14 @@ class PostprocessService(OwnerDelegator):
                             if verdict == "ready":
                                 task_done = True
                                 item.setdefault("download_completed_at", now)
+                            elif self._offline_timeout_should_defer(
+                                tasks_valid, verdict
+                            ):
+                                logger.warning(
+                                    f"接口异常，暂缓判定：{file_name}"
+                                )
+                                self._schedule_finalize_retry(item, now)
+                                continue
                             else:
                                 reason = "115 离线下载超过 30 分钟未完成，已退出"
                                 logger.error(f"{reason}：{file_name}")

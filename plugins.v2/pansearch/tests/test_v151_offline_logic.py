@@ -39,6 +39,19 @@ def extract_methods(rel_path, names):
     return found
 
 
+def extract_functions(rel_path, names):
+    source = (PLUGIN_ROOT / rel_path).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    found = {
+        node.name: ast.get_source_segment(source, node)
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    }
+    missing = set(names) - set(found)
+    assert not missing, "missing functions: %s" % missing
+    return found
+
+
 class _StubLogger:
     def debug(self, *args, **kwargs):
         pass
@@ -427,6 +440,227 @@ class TestPendingRecordGuardrails(unittest.TestCase):
             PLUGIN_ROOT / "handlers" / "sync" / "postprocess.py"
         ).read_text(encoding="utf-8")
         self.assertIn("self._persist_offline_progress(item, task)", source)
+
+
+class TestRetryTransientCall(unittest.TestCase):
+    """T3.1/T3.2: retry_transient_call 有界重试后抛出原始异常。"""
+
+    @classmethod
+    def setUpClass(cls):
+        found = extract_functions(
+            "drive/common.py",
+            {"retry_transient_call", "is_transient_drive_error",
+             "error_http_status"},
+        )
+        namespace = {
+            "logger": _StubLogger(),
+            "time": __import__("time"),
+            "Any": typing.Any,
+            "Callable": typing.Callable,
+            "Optional": typing.Optional,
+            "Sequence": typing.Sequence,
+        }
+        for name, source in found.items():
+            exec(source, namespace)
+        cls._retry = staticmethod(namespace["retry_transient_call"])
+        cls._is_transient = staticmethod(namespace["is_transient_drive_error"])
+        cls._http_status = staticmethod(namespace["error_http_status"])
+
+    def test_success_on_first_attempt(self):
+        calls = []
+
+        def func():
+            calls.append(1)
+            return "ok"
+
+        self.assertEqual(
+            self._retry(func), "ok"
+        )
+        self.assertEqual(len(calls), 1)
+
+    def test_gives_up_after_attempts_and_reraises(self):
+        calls = []
+        error = RuntimeError("server error")
+
+        def func():
+            calls.append(1)
+            raise error
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._retry(
+                func, attempts=3, delays=(0, 0)
+            )
+        self.assertIs(ctx.exception, error)
+        self.assertEqual(len(calls), 3)
+
+    def test_success_on_later_attempt(self):
+        state = {"calls": 0}
+
+        def func():
+            state["calls"] += 1
+            if state["calls"] < 3:
+                raise ConnectionError("reset")
+            return "ok"
+
+        self.assertEqual(
+            self._retry(
+                func, attempts=3, delays=(0, 0)
+            ),
+            "ok",
+        )
+        self.assertEqual(state["calls"], 3)
+
+    def test_non_transient_error_not_retried(self):
+        calls = []
+
+        class FakeHTTPError(Exception):
+            status_code = 405
+
+        def func():
+            calls.append(1)
+            raise FakeHTTPError("method not allowed")
+
+        with self.assertRaises(FakeHTTPError):
+            self._retry(func, attempts=3, delays=(0, 0))
+        self.assertEqual(len(calls), 1)
+
+    def test_transient_status_classification(self):
+        is_transient = self._is_transient
+        http_status = self._http_status
+
+        class FakeHTTPError(Exception):
+            def __init__(self, status):
+                self.status_code = status
+
+        self.assertTrue(is_transient(FakeHTTPError(502)))
+        self.assertTrue(is_transient(FakeHTTPError(429)))
+        self.assertFalse(is_transient(FakeHTTPError(405)))
+        self.assertFalse(is_transient(FakeHTTPError(403)))
+        self.assertTrue(is_transient(TimeoutError("network")))
+        self.assertEqual(http_status(FakeHTTPError(502)), 502)
+        self.assertIsNone(http_status(TimeoutError("network")))
+
+    def test_delays_bounded_under_15s(self):
+        # 静态检查：离线任务列表重试的退避延迟总和必须小于 15 秒。
+        source = (
+            PLUGIN_ROOT / "drive" / "p115" / "offline.py"
+        ).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if (
+                    isinstance(node, ast.Call)
+                    and getattr(node.func, "id", "") == "retry_transient_call"
+            ):
+                delay_arg = next(
+                    (
+                        kw.value for kw in node.keywords
+                        if kw.arg == "delays"
+                    ),
+                    None,
+                )
+                if delay_arg is not None and isinstance(
+                    delay_arg, (ast.List, ast.Tuple)
+                ):
+                    total = sum(
+                        element.value
+                        for element in delay_arg.elts
+                        if isinstance(element, ast.Constant)
+                    )
+                    self.assertLess(total, 15)
+
+
+class TestOfflineTimeoutShouldDefer(unittest.TestCase):
+    """T3.3: 快照不可用时超时判定暂缓，而不是失败。"""
+
+    @classmethod
+    def setUpClass(cls):
+        found = extract_methods(
+            "handlers/sync/postprocess.py",
+            {"_offline_timeout_should_defer"},
+        )
+        cls._source = found
+
+    def _make_handler(self):
+        class Stub:
+            pass
+
+        stub = Stub()
+        namespace = {"Optional": typing.Optional}
+        exec(self._source["_offline_timeout_should_defer"], namespace)
+        Stub._offline_timeout_should_defer = staticmethod(
+            namespace["_offline_timeout_should_defer"]
+        )
+        return stub
+
+    def test_defer_when_snapshot_invalid_and_missing(self):
+        handler = self._make_handler()
+        self.assertTrue(
+            handler._offline_timeout_should_defer(False, "missing")
+        )
+
+    def test_defer_when_snapshot_invalid_and_no_verdict(self):
+        handler = self._make_handler()
+        self.assertTrue(handler._offline_timeout_should_defer(False, None))
+
+    def test_ready_wins_even_when_snapshot_invalid(self):
+        handler = self._make_handler()
+        self.assertFalse(
+            handler._offline_timeout_should_defer(False, "ready")
+        )
+
+    def test_no_defer_when_snapshot_valid(self):
+        handler = self._make_handler()
+        self.assertFalse(
+            handler._offline_timeout_should_defer(True, "missing")
+        )
+
+    def test_postprocess_wires_defer_in_all_timeout_branches(self):
+        source = (
+            PLUGIN_ROOT / "handlers" / "sync" / "postprocess.py"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            source.count("self._offline_timeout_should_defer("), 3
+        )
+        self.assertEqual(source.count("接口异常，暂缓判定"), 3)
+        # 暂缓分支必须复用既有重试节奏，避免热循环。
+        self.assertIn("_schedule_finalize_retry", source)
+
+
+class TestIterDirectory405Fallback(unittest.TestCase):
+    """T3.2: 持续 405 时切换 ios 渠道重放目录列举。"""
+
+    def test_web_then_ios_channel_ordering(self):
+        source = (
+            PLUGIN_ROOT / "drive" / "p115" / "files.py"
+        ).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        method = None
+        for node in ast.walk(tree):
+            if (
+                    isinstance(node, ast.FunctionDef)
+                    and node.name == "_iter_directory"
+            ):
+                method = node
+                break
+        self.assertIsNotNone(method, "_iter_directory 未找到")
+        source_segment = ast.get_source_segment(source, method)
+        # web 渠道先重试，持续 405 后才切换 ios 渠道。
+        self.assertIn('app="web"', source_segment)
+        self.assertIn('app="ios"', source_segment)
+        self.assertLess(
+            source_segment.index('app="web"'),
+            source_segment.index('app="ios"'),
+        )
+        self.assertIn("retry_transient_call", source_segment)
+        self.assertIn("405", source_segment)
+
+    def test_offline_task_fetch_keeps_rate_limiter_discipline(self):
+        source = (
+            PLUGIN_ROOT / "drive" / "p115" / "offline.py"
+        ).read_text(encoding="utf-8")
+        # 每次重试都仍经由 rate_limiter，且不叠加其内部重试。
+        self.assertIn("retry_transient_call(", source)
+        self.assertIn("max_retries=0", source)
 
 
 if __name__ == "__main__":
