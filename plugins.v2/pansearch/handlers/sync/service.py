@@ -232,6 +232,7 @@ class SyncHandler:
             task_context: Callable[[], Tuple[str, Any]] = None,
             pansou_client: Any = None,
             pansou_check_enabled: bool = False,
+            max_transfer_links: int = 0,
     ):
         """
         初始化同步处理器
@@ -268,6 +269,7 @@ class SyncHandler:
         :param task_context: 当前订阅任务标识与停止事件回调
         :param pansou_client: PanSou 客户端（用于链接有效性检测，渠道无关）
         :param pansou_check_enabled: 是否启用 PanSou 链接有效性检测层
+        :param max_transfer_links: 单订阅单轮累计成功转存链接数上限，0 表示不限制
         """
         self._cloud_drive = cloud_drive
         self._cross_transfer_enabled = bool(cross_transfer_enabled)
@@ -344,6 +346,7 @@ class SyncHandler:
         self._save_data = save_data_func
         self._pansou_client = pansou_client
         self._pansou_check_enabled = bool(pansou_check_enabled)
+        self._max_transfer_links = max(0, int(max_transfer_links or 0))
         self._self_heal_interval = self_heal_interval
         self._enable_cloud_upgrade = enable_cloud_upgrade
         self._enable_pt_upgrade = bool(enable_pt_upgrade)

@@ -1122,6 +1122,12 @@ class PanSearch(_PluginBase):
             self._organize_after_transfer = bool(
                 config.get("organize_after_transfer", False)
             )
+            try:
+                self._max_transfer_links = max(
+                    0, min(int(config.get("max_transfer_links", 5) or 5), 500)
+                )
+            except (TypeError, ValueError):
+                self._max_transfer_links = 5
             self._strm_generate_enabled = bool(config.get("strm_generate_enabled", True))
             self._nfo_scrape_enabled = bool(config.get("nfo_scrape_enabled", False))
             self._image_scrape_enabled = bool(config.get("image_scrape_enabled", False))
@@ -1836,6 +1842,7 @@ class PanSearch(_PluginBase):
             task_context=self._current_task_context,
             pansou_client=getattr(self, "_pansou_client", None),
             pansou_check_enabled=self._pansou_check_enabled,
+            max_transfer_links=self._max_transfer_links,
         )
         self._sync_handler.reconcile_orphaned_history()
 

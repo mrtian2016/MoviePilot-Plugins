@@ -268,7 +268,14 @@ class MovieSyncProcessor(OwnerDelegator):
             # 遍历搜索结果，尝试找到并转存电影
             movie_transferred = False
             for resource_index, resource in enumerate(candidate_resources):
-                if movie_transferred or self._stop_requested():
+                if (
+                        movie_transferred
+                        or self._stop_requested()
+                        or (
+                            self._max_transfer_links
+                            and transferred_count >= self._max_transfer_links
+                        )
+                ):
                     break
                 self._set_task_phase(
                     subscribe,

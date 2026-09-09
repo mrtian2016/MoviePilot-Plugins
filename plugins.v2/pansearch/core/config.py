@@ -260,6 +260,7 @@ class UIConfig:
             "block_start_time": "18:00",
             "block_end_time": "23:59",
             "transfer_task_batch_size": 50,
+            "max_transfer_links": 5,
             "cross_transfer_enabled": False,
             "cross_transfer_media_types": ["movie", "tv"],
             "cross_transfer_download_path": "",

@@ -324,6 +324,12 @@ class TelevisionSyncProcessor(OwnerDelegator):
                     resource_batches
             ):
                 search_prefix = f"[{search_label}][{source.upper()}]"
+                if self._max_transfer_links and transferred_count >= self._max_transfer_links:
+                    logger.info(
+                        f"{search_prefix} 单订阅累计转存链接数已达上限 "
+                        f"{self._max_transfer_links}，不再尝试后续来源"
+                    )
+                    break
                 if self._stop_requested():
                     break
                 if not missing_episodes and not discover_manual_episodes:
@@ -758,6 +764,16 @@ class TelevisionSyncProcessor(OwnerDelegator):
                                 self._stop_requested()
                                 or not discover_manual_episodes and not missing_episodes
                         ):
+                            break
+
+                        if (
+                                self._max_transfer_links
+                                and transferred_count >= self._max_transfer_links
+                        ):
+                            logger.info(
+                                f"{search_prefix} 单订阅累计转存链接数已达上限 "
+                                f"{self._max_transfer_links}，不再尝试本批次后续链接"
+                            )
                             break
 
                     except Exception as e:
