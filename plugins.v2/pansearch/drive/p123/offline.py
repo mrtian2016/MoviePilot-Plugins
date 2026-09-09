@@ -182,6 +182,10 @@ class P123OfflineService:
                 self._refresh_ok = False
                 return [dict(task) for task in self._tasks]
 
+    def get_offline_tasks(self, force: bool = False) -> list[Dict[str, Any]]:
+        """读取离线任务列表，与任务快照共享同一份缓存。"""
+        return [dict(task) for task in self._load_tasks(force=force)]
+
     def get_offline_task_list_snapshot(
             self,
             force: bool = False,
