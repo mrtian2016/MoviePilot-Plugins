@@ -188,6 +188,7 @@ class UIConfig:
             "pansou_result_limit": 10,
             "pansou_refresh": True,
             "pansou_timeout": 30,
+            "pansou_check_enabled": False,
             "seedhub_result_limit": 20,
             "seedhub_request_interval": 1.0,
             "seedhub_timeout": 20,

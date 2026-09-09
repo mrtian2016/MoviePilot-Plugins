@@ -230,6 +230,8 @@ class SyncHandler:
             file_finalized: Callable[[List[Dict[str, Any]], int], None] = None,
             task_update: Callable[..., None] = None,
             task_context: Callable[[], Tuple[str, Any]] = None,
+            pansou_client: Any = None,
+            pansou_check_enabled: bool = False,
     ):
         """
         初始化同步处理器
@@ -264,6 +266,8 @@ class SyncHandler:
         :param file_finalized: 文件真正完成后的通知回调
         :param task_update: 订阅任务阶段更新回调
         :param task_context: 当前订阅任务标识与停止事件回调
+        :param pansou_client: PanSou 客户端（用于链接有效性检测，渠道无关）
+        :param pansou_check_enabled: 是否启用 PanSou 链接有效性检测层
         """
         self._cloud_drive = cloud_drive
         self._cross_transfer_enabled = bool(cross_transfer_enabled)
@@ -338,6 +342,8 @@ class SyncHandler:
         self._post_message = post_message_func
         self._get_data = get_data_func
         self._save_data = save_data_func
+        self._pansou_client = pansou_client
+        self._pansou_check_enabled = bool(pansou_check_enabled)
         self._self_heal_interval = self_heal_interval
         self._enable_cloud_upgrade = enable_cloud_upgrade
         self._enable_pt_upgrade = bool(enable_pt_upgrade)
@@ -1242,6 +1248,99 @@ class SyncHandler:
         return bool(
             self._offline_download and self._offline_download.is_magnet_url(url)
         )
+
+    # ------------------ PanSou 链接有效性检测层（全渠道前置过滤） ------------------
+
+    def _pansou_check_disk_type(
+            self, resource: Dict[str, Any], share_url: str
+    ) -> str:
+        """从资源与分享链接推导 PanSou 检测所需的 disk_type（渠道无关）。"""
+        try:
+            disk_type = str(
+                self._supported_resource_type(resource, share_url) or ""
+            ).strip().lower()
+        except Exception:
+            disk_type = ""
+        if not disk_type or disk_type in {"cloud", "ed2k", "magnet"}:
+            return "115"
+        return {"189": "tianyi", "aliyun": "alipan"}.get(disk_type, disk_type)
+
+    def _build_pansou_check_map(
+            self, resources: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, str]]:
+        """
+        对一批搜索结果批量调用 PanSou 链接有效性检测（渠道无关，覆盖全部搜索源）
+
+        :param resources: 搜索结果列表（含 url/password 字段）
+        :return: url -> state 映射；检测未启用或降级失败时返回 None（调用方回退原有校验流程）
+        """
+        if not self._pansou_check_enabled or not self._pansou_client:
+            return None
+
+        items = []
+        for resource in resources:
+            url = str(resource.get("url") or "")
+            # 访问码拼接逻辑与转存循环保持一致（password 必达原则）
+            password = str(resource.get("password") or "")
+            if password and url and "password=" not in url:
+                url = f"{url}?password={password}"
+            if not url:
+                continue
+            items.append({
+                "disk_type": self._pansou_check_disk_type(resource, url),
+                "url": url,
+                "password": password,
+            })
+
+        if not items:
+            return None
+
+        try:
+            results = self._pansou_client.check_links(items)
+        except Exception as e:
+            logger.warning(f"PanSou 链接有效性检测异常，降级为原有校验流程: {e}")
+            return None
+
+        if not results or len(results) != len(items):
+            logger.warning("PanSou 链接有效性检测无结果或数量不匹配，降级为原有校验流程")
+            return None
+
+        state_map: Dict[str, str] = {}
+        for item, result in zip(items, results):
+            if isinstance(result, dict):
+                state_map[item["url"]] = str(
+                    result.get("state") or ""
+                ).strip().lower()
+
+        ok_count = sum(1 for s in state_map.values() if s == "ok")
+        bad_count = sum(1 for s in state_map.values() if s == "bad")
+        logger.info(
+            f"PanSou 链接有效性检测完成: 共 {len(state_map)} 个链接, "
+            f"有效 {ok_count} 个, 失效 {bad_count} 个"
+        )
+        return state_map
+
+    def _pansou_check_single(self, share_url: str, password: str = "") -> str:
+        """
+        对单个链接补做 PanSou 有效性检测（用于批量检测未覆盖的链接）
+
+        :param share_url: 分享链接
+        :param password: 提取码（可为空）
+        :return: state 字符串；检测未启用或降级失败时返回空字符串（调用方回退原有校验流程）
+        """
+        if not self._pansou_check_enabled or not self._pansou_client or not share_url:
+            return ""
+        try:
+            results = self._pansou_client.check_links([{
+                "disk_type": self._pansou_check_disk_type({}, share_url),
+                "url": share_url,
+                "password": password,
+            }])
+            if results and isinstance(results[0], dict):
+                return str(results[0].get("state") or "").strip().lower()
+        except Exception as e:
+            logger.warning(f"PanSou 链接有效性检测异常，降级为原有校验流程: {e}")
+        return ""
 
     def close(self) -> None:
         """提交尚未发送的完成通知并释放通知定时器。"""

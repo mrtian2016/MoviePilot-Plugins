@@ -431,3 +431,76 @@ class PanSouClient:
                 "error": f"搜索网盘资源失败: {str(e)}",
                 "keyword": keyword
             }
+
+    def check_links(self, items: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        """
+        批量检测网盘分享链接有效性（渠道无关）
+
+        :param items: 检测项列表，每项 {"disk_type": "115", "url": 分享链接, "password": 提取码(可为空)}
+        :return: 检测结果列表（与 items 顺序一一对应，state: ok|bad|locked|unsupported|uncertain）；
+                 降级/失败时返回空列表，由调用方回退原有校验流程
+        """
+        if not self.base_url or not items:
+            return []
+
+        try:
+            headers = {"Content-Type": "application/json"}
+
+            # 如果启用认证，获取 Token
+            if self.auth_enabled:
+                token = self._get_token()
+                if not token:
+                    logger.warning("PanSou 链接检测认证失败，降级为原有校验流程")
+                    return []
+                headers["Authorization"] = f"Bearer {token}"
+
+            check_url = f"{self.base_url}/api/check/links"
+            payload = {"items": items}
+
+            logger.debug(f"PanSou 链接有效性检测: {len(items)} 个链接")
+            response = gated_request(
+                self._request_gate,
+                requests.post,
+                check_url,
+                impersonate="chrome",
+                json=payload,
+                headers=headers,
+                timeout=8,
+                proxies=self._proxies,
+            )
+
+            # Token 失效重试
+            if response.status_code == 401 and self.auth_enabled:
+                self._clear_token()
+                token = self._get_token()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                    response = gated_request(
+                        self._request_gate,
+                        requests.post,
+                        check_url,
+                        impersonate="chrome",
+                        json=payload,
+                        headers=headers,
+                        timeout=8,
+                        proxies=self._proxies,
+                    )
+
+            if response.status_code != 200:
+                logger.warning(
+                    f"PanSou 链接检测请求失败: HTTP {response.status_code}，"
+                    "降级为原有校验流程"
+                )
+                return []
+
+            resp_data = self._response_json(response)
+            results = resp_data.get("results", [])
+            if not isinstance(results, list) or not results:
+                logger.warning("PanSou 链接检测响应无结果或格式异常，降级为原有校验流程")
+                return []
+
+            return results
+
+        except Exception as e:
+            logger.warning(f"PanSou 链接检测异常: {e}，降级为原有校验流程")
+            return []

@@ -191,6 +191,7 @@ class PanSearch(_PluginBase):
     _pansou_result_limit: int = 10
     _pansou_refresh: bool = True
     _pansou_timeout: int = 30
+    _pansou_check_enabled: bool = False
     _seedhub_enabled: bool = False
     _seedhub_base_url: str = "https://www.seedhub.cc"
     _seedhub_result_limit: int = 20
@@ -854,6 +855,9 @@ class PanSearch(_PluginBase):
             self._pansou_refresh = bool(config.get("pansou_refresh", True))
             self._pansou_timeout = max(
                 5, min(int(config.get("pansou_timeout", 30) or 30), 120)
+            )
+            self._pansou_check_enabled = bool(
+                config.get("pansou_check_enabled", False)
             )
             self._seedhub_enabled = "seedhub" in selected_sources
             self._seedhub_base_url = str(
@@ -1830,6 +1834,8 @@ class PanSearch(_PluginBase):
             file_finalized=self._on_file_finalized,
             task_update=self._update_sync_task,
             task_context=self._current_task_context,
+            pansou_client=getattr(self, "_pansou_client", None),
+            pansou_check_enabled=self._pansou_check_enabled,
         )
         self._sync_handler.reconcile_orphaned_history()
 

@@ -570,6 +570,29 @@ class ResourceTransferService(OwnerDelegator):
             log_prefix: str = "",
     ) -> bool:
         """使用对应 Provider 的统一能力校验资源链接。"""
+        # PanSou 链接有效性预检查：失效链接直接跳过，有效链接跳过原校验；
+        # 其余状态（locked/unsupported/uncertain/空）与任何异常均回退原有校验流程。
+        try:
+            if (
+                    share_url
+                    and not self._is_cloud_resource_url(share_url)
+                    and not self._is_offline_url(share_url)
+                    and not self._is_magnet_url(share_url)
+                    and getattr(self, "_pansou_check_enabled", False)
+                    and getattr(self, "_pansou_client", None)
+            ):
+                state = self._pansou_check_single(share_url)
+                if state == "bad":
+                    prefix = f"{log_prefix} " if log_prefix else ""
+                    logger.debug(
+                        f"{prefix}{resource_label}已被 PanSou 有效性预检查判定失效，"
+                        f"跳过：{self._resource_log_reference(share_url)}"
+                    )
+                    return False
+                if state == "ok":
+                    return True
+        except Exception as error:
+            logger.debug(f"PanSou 有效性预检查异常，回退原有校验流程: {error}")
         provider = self._resource_provider_for_url(share_url)
         share_service = (
             provider.require(CloudDriveCapability.SHARE_TRANSFER)
