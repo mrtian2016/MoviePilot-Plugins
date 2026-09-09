@@ -143,18 +143,31 @@ download progress). Four tasks T1-T4, behavior spec in the round prompts.
 - tests/test_wk1_logic.py: ast-extraction unit test harness usable for
   new logic tests without importing app.*.
 
-### v1.5.1 progress (updated 2026-09-09, after T1-T3 rounds)
+### v1.5.1 progress (updated 2026-09-09, batch complete, version 1.5.1)
 - Committed: 19c9df0 (T1 real info_hash handle + progress snapshot),
   0e933ef (T2 timeout file-exists verdict + blacklist guard),
   df17f8e (T3 502/405 backoff retry + defer on refresh_ok=False),
   fddefbb (T2 regression: ready verdict falls through to finalize same
-  round, livelock fix). Unit tests: tests/test_v151_offline_logic.py,
-  34 cases, all OK via `python3 -m unittest tests.test_v151_offline_logic`
-  run from plugins.v2/pansearch/.
-- Remaining: T4 (reconcile failed/processing history every round with
-  notification; deterministic 4100018 dead-link single-resource blacklist)
-  and version wrap-up (plugin_version 1.5.1 + package.v2.json PanSearch
-  entry version/history). Do NOT touch dist/ this round.
+  round, livelock fix), plus T4 (history backfill reconcile + dead-link
+  blacklist) and 1.5.1 version wrap-up. Unit tests:
+  tests/test_v151_offline_logic.py, 49 cases, all OK via
+  `python3 -m unittest tests.test_v151_offline_logic` run from
+  plugins.v2/pansearch/ (wk1 suite 13 cases also OK).
+- T4-A: history.py reconcile_offline_history_backfill (statuses
+  失败/处理中/empty, skip active pending, staging+final dir name/sha1
+  verdict, defer on transient listing errors without caching, 10/round
+  cap, 1h in-memory recheck cache) called at end of every
+  core/services/sync.py _do_sync round; backfills to 成功, reuses
+  _record_platform_transfer_histories + _send_finalized_batch.
+- T4-B: share.py _do_transfer records deterministic dead links (errno
+  4100018 / 过期 / expired) keyed by share_url, consumed via
+  consume_dead_link_failure; service.py _blacklist_dead_link_share wired
+  into _transfer_file (both branches) and _transfer_episode_batch;
+  resources.py _validate_resource_url blacklists expired shares;
+  movie/television/upgrade loops check _is_offline_blacklisted
+  unconditionally (share links included, dedicated log line).
+- v1.5.1 released: plugin_version 1.5.1, package.v2.json entry version
+  + Chinese history note. dist/ untouched.
 
 ### v1.5.1 guardrails
 - Do NOT regress v1.5.0 F1-F4 (pansou prefilter, max_transfer_links,

@@ -115,7 +115,9 @@ class PanSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/odomu/MoviePilot-Plugins/main/icons/cloud.png"
     # 插件版本
-    plugin_version = "1.5.0"
+    # v1.5.1：修复离线任务假失败（真实任务句柄登记、超时前文件终审、接口抖动暂缓判定），
+    # 新增下载进度展示、存量核对自动回填、死链防重复转存。
+    plugin_version = "1.5.1"
     # 插件作者
     plugin_author = "odomu"
     # 作者主页
