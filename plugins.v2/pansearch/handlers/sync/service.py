@@ -1903,8 +1903,12 @@ class SyncHandler:
         """将失败或超时的离线任务/资源加入黑名单（1天TTL）。"""
         if not key_or_url or not hasattr(self, "_offline_blacklist"):
             return
-        keys = set()
         text = str(key_or_url).strip()
+        if text.startswith(("subscribe:", "media:")):
+            # 兜底任务ID覆盖整个订阅或媒体，粒度不可接受，拒绝入黑名单。
+            logger.warning(f"离线黑名单拒绝订阅级兜底键，已跳过：{text}")
+            return
+        keys = set()
         if text:
             keys.add(text)
         info_hash = self._offline_hash(text) if hasattr(self, "_offline_hash") else ""

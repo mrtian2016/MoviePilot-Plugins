@@ -997,12 +997,23 @@ class PostprocessService(OwnerDelegator):
                         continue
                     if not task_done:
                         if now - created_at >= self._OFFLINE_TIMEOUT:
-                            reason = "Magnet 离线下载超过 30 分钟未完成，已退出"
-                            self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
-                            self._cleanup_failed_offline_task(item, reason)
-                            self._mark_offline_history_status(pending_key, "失败", reason)
-                            pending.pop(pending_key, None)
-                            failed += 1
+                            verdict = self._offline_timeout_file_verdict(
+                                item, now, directory_snapshot,
+                                subscribe_cache=subscribe_cache,
+                            )
+                            if verdict == "defer":
+                                self._schedule_finalize_retry(item, now)
+                                continue
+                            if verdict == "ready":
+                                task_done = True
+                            else:
+                                reason = "Magnet 离线下载超过 30 分钟未完成，已退出"
+                                self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
+                                self._cleanup_failed_offline_task(item, reason)
+                                self._mark_offline_history_status(pending_key, "失败", reason)
+                                pending.pop(pending_key, None)
+                                failed += 1
+                                continue
                         else:
                             self._schedule_finalize_retry(item, now)
                         continue
@@ -1047,13 +1058,26 @@ class PostprocessService(OwnerDelegator):
                         continue
                     if task is not None and not task_done:
                         if now - created_at >= self._OFFLINE_TIMEOUT:
-                            reason = "115 离线下载超过 30 分钟未完成，已退出"
-                            logger.error(f"{reason}：{file_name}")
-                            self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
-                            self._mark_offline_history_status(pending_key, "失败", reason)
-                            pending.pop(pending_key, None)
-                            failed += 1
+                            verdict = self._offline_timeout_file_verdict(
+                                item, now, directory_snapshot,
+                                subscribe_cache=subscribe_cache,
+                            )
+                            if verdict == "defer":
+                                self._schedule_finalize_retry(item, now)
+                                continue
+                            if verdict == "ready":
+                                task_done = True
+                                item.setdefault("download_completed_at", now)
+                            else:
+                                reason = "115 离线下载超过 30 分钟未完成，已退出"
+                                logger.error(f"{reason}：{file_name}")
+                                self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
+                                self._mark_offline_history_status(pending_key, "失败", reason)
+                                pending.pop(pending_key, None)
+                                failed += 1
+                                continue
                             continue
+                        self._persist_offline_progress(item, task)
                         self._schedule_finalize_retry(item, now)
                         continue
                     if not task_done and task is None and tasks_valid:
@@ -1071,12 +1095,24 @@ class PostprocessService(OwnerDelegator):
                             continue
                     if not task_done:
                         if now - created_at >= self._OFFLINE_TIMEOUT:
-                            reason = "115 离线下载超过 30 分钟未完成，已退出"
-                            logger.error(f"{reason}：{file_name}")
-                            self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
-                            self._mark_offline_history_status(pending_key, "失败", reason)
-                            pending.pop(pending_key, None)
-                            failed += 1
+                            verdict = self._offline_timeout_file_verdict(
+                                item, now, directory_snapshot,
+                                subscribe_cache=subscribe_cache,
+                            )
+                            if verdict == "defer":
+                                self._schedule_finalize_retry(item, now)
+                                continue
+                            if verdict == "ready":
+                                task_done = True
+                                item.setdefault("download_completed_at", now)
+                            else:
+                                reason = "115 离线下载超过 30 分钟未完成，已退出"
+                                logger.error(f"{reason}：{file_name}")
+                                self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
+                                self._mark_offline_history_status(pending_key, "失败", reason)
+                                pending.pop(pending_key, None)
+                                failed += 1
+                                continue
                             continue
                         self._schedule_finalize_retry(item, now)
                         continue
