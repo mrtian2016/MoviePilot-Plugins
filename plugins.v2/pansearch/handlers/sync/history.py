@@ -43,6 +43,10 @@ class HistoryService(OwnerDelegator):
     _METADATA_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
     _SEASON_DIRECTORY_PATTERN = re.compile(r"^season[ ._-]*\d+$", re.IGNORECASE)
     _PLATFORM_HISTORY_STORAGE = "pansearch"
+    # 存量核对自动回填：每轮最多核对条数与同键复核间隔（内存缓存）。
+    _OFFLINE_BACKFILL_STATUSES = {"失败", "处理中"}
+    _OFFLINE_BACKFILL_RECHECK_SECONDS = 3600
+    _OFFLINE_BACKFILL_CACHE_MAXSIZE = 500
 
     def _build_transfer_history_item(
             self,
@@ -1143,6 +1147,214 @@ class HistoryService(OwnerDelegator):
             if self._history_changed:
                 self._history_changed()
         return repaired
+
+    @staticmethod
+    def _offline_backfill_record_key(record: Dict[str, Any]) -> str:
+        """存量核对的记录键：分享链接 + 目录 + 文件名。"""
+        share_url = str(record.get("share_url") or "").strip()
+        file_name = str(
+            record.get("source_file_name") or record.get("file_name") or ""
+        ).strip()
+        cloud_dir = str(
+            record.get("staging_dir") or record.get("cloud_dir") or ""
+        ).strip()
+        if not file_name and not share_url:
+            return ""
+        return f"{share_url}|{cloud_dir}|{file_name}"
+
+    def _offline_backfill_verdict(
+            self,
+            record: Dict[str, Any],
+            directory_snapshot,
+    ) -> str:
+        """与超时终审同款的反查：按文件名或源哈希在中转与最终目录找文件。
+
+        返回 "ready"（文件已就绪）、"defer"（目录接口瞬态错误，本轮跳过）
+        或 "missing"（确实不存在）。
+        """
+        staging_dir = str(
+            record.get("staging_dir") or record.get("cloud_dir") or "/"
+        ).rstrip("/") or "/"
+        final_dir = str(record.get("cloud_dir") or "/").rstrip("/") or "/"
+        names: List[str] = []
+        for name in (
+                record.get("staging_name"),
+                record.get("file_name"),
+                record.get("source_file_name"),
+        ):
+            text = str(name or "").strip()
+            if text and text not in names:
+                names.append(text)
+        source_sha1 = str(record.get("source_sha1") or "").upper()
+        if not names and not source_sha1:
+            return "missing"
+        directories = [staging_dir]
+        if final_dir != staging_dir:
+            directories.append(final_dir)
+        for cloud_dir in directories:
+            directory_valid, file_index = directory_snapshot(cloud_dir)
+            if not directory_valid:
+                return "defer"
+            if not file_index:
+                continue
+            candidate = next(
+                (file_index[name] for name in names if name in file_index),
+                None,
+            )
+            if not candidate and source_sha1:
+                candidate = next(
+                    (
+                        value for value in file_index.values()
+                        if str(getattr(value, "sha1", "") or "").upper()
+                        == source_sha1
+                    ),
+                    None,
+                )
+            if candidate:
+                logger.info(
+                    f"存量核对发现文件已在网盘就绪，自动回填为成功："
+                    f"{cloud_dir}/{getattr(candidate, 'name', '') or names[0]}"
+                )
+                return "ready"
+        return "missing"
+
+    def _offline_backfill_notification_detail(
+            self, record: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """从历史记录构造补发通知所需的结构，复用既有完成通知链路。"""
+        is_tv = str(record.get("type") or "") == "电视剧"
+        detail = {
+            "type": "电视剧" if is_tv else "电影",
+            "title": record.get("title"),
+            "year": record.get("year"),
+            "image": record.get("image"),
+            "file_name": record.get("file_name") or record.get("source_file_name"),
+            "notification_kind": (
+                "upgrade" if self._is_upgrade_history(record)
+                else "cross_transfer" if record.get("transfer_mode") == "cross"
+                else "transfer"
+            ),
+        }
+        if is_tv:
+            detail["season"] = max(1, int(record.get("season") or 1))
+            try:
+                episode = int(record.get("episode") or 0)
+            except (TypeError, ValueError):
+                episode = 0
+            detail["episodes"] = [episode] if episode > 0 else []
+        return detail
+
+    def reconcile_offline_history_backfill(self, limit: int = 10) -> int:
+        """存量核对自动回填：失败/空/处理中历史反查网盘，就绪即回填成功。
+
+        每轮同步调用：对状态为失败、空值或处理中的历史记录，按文件名或
+        源哈希在中转目录与最终目录反查文件是否已在 115 网盘就绪；就绪则
+        回填为成功并补发通知。目录接口瞬态错误时本轮跳过该条，不误判。
+        每轮最多核对 limit 条，近期核对过的键做内存缓存避免全量列目录。
+        """
+        if (
+                not self._get_data
+                or not self._save_data
+                or not self._cloud_directories
+        ):
+            return 0
+        now = time.time()
+        checked_at = getattr(self, "_offline_backfill_checked_at", None)
+        if checked_at is None:
+            checked_at = {}
+            self._offline_backfill_checked_at = checked_at
+        if len(checked_at) > self._OFFLINE_BACKFILL_CACHE_MAXSIZE:
+            for key, value in list(checked_at.items()):
+                if now - value >= self._OFFLINE_BACKFILL_RECHECK_SECONDS:
+                    checked_at.pop(key, None)
+        directory_snapshots: Dict[str, Tuple[bool, Dict[str, Any]]] = {}
+
+        def directory_snapshot(cloud_dir: str) -> Tuple[bool, Dict[str, Any]]:
+            normalized_dir = str(cloud_dir or "").rstrip("/")
+            if normalized_dir in directory_snapshots:
+                return directory_snapshots[normalized_dir]
+            lookup = self._cloud_directories.resolve_directory(normalized_dir)
+            if not lookup.checked:
+                result = (False, {})
+            elif lookup.directory_id is None:
+                result = (True, {})
+            else:
+                listing = self._cloud_directories.list_directory(
+                    lookup.directory_id
+                )
+                if not listing.checked:
+                    result = (False, {})
+                else:
+                    result = (True, {
+                        file_item.name: file_item
+                        for file_item in listing.files
+                        if file_item.name
+                    })
+            directory_snapshots[normalized_dir] = result
+            return result
+
+        max_checks = max(1, int(limit or 10))
+        repaired_records: List[Dict[str, Any]] = []
+        notification_details: List[Dict[str, Any]] = []
+        with self._offline_pending_lock:
+            pending = self._get_data(self._OFFLINE_PENDING_KEY) or {}
+            history = self._get_data("history") or []
+            checked = 0
+            for record in history:
+                if checked >= max_checks:
+                    break
+                if not isinstance(record, dict):
+                    continue
+                status = str(record.get("status") or "").strip()
+                if status and status not in self._OFFLINE_BACKFILL_STATUSES:
+                    continue
+                finalize_key = str(record.get("finalize_key") or "")
+                if finalize_key and finalize_key in pending:
+                    # 仍有活跃后处理任务，交由离线监视器收敛，不重复回填。
+                    continue
+                key = self._offline_backfill_record_key(record)
+                if not key:
+                    continue
+                if now - checked_at.get(key, 0) < (
+                        self._OFFLINE_BACKFILL_RECHECK_SECONDS
+                ):
+                    continue
+                checked += 1
+                try:
+                    verdict = self._offline_backfill_verdict(
+                        record, directory_snapshot
+                    )
+                except Exception as error:
+                    logger.debug(
+                        f"存量核对反查网盘文件异常，本轮跳过："
+                        f"{record.get('file_name') or key}，{error}"
+                    )
+                    verdict = "defer"
+                if verdict == "defer":
+                    # 瞬态接口错误：本轮跳过且不记缓存，下一轮重试。
+                    continue
+                checked_at[key] = now
+                if verdict != "ready":
+                    continue
+                record["status"] = "成功"
+                record.pop("failure_reason", None)
+                record.pop("finalize_key", None)
+                repaired_records.append(copy.deepcopy(record))
+                notification_details.append(
+                    self._offline_backfill_notification_detail(record)
+                )
+            if repaired_records:
+                self._save_data("history", history)
+        if repaired_records:
+            logger.info(
+                f"存量核对自动回填：{len(repaired_records)} 条失败/处理中记录"
+                f"已在网盘就绪，已回填为成功并补发通知"
+            )
+            self._record_platform_transfer_histories(repaired_records)
+            self._send_finalized_batch(notification_details)
+            if self._history_changed:
+                self._history_changed()
+        return len(repaired_records)
 
     def _pending_history_record(self, pending_key: str) -> Optional[Dict[str, Any]]:
         history = (self._get_data("history") or []) if self._get_data else []

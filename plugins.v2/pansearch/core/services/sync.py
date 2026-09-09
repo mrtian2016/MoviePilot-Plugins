@@ -1012,6 +1012,13 @@ class SyncExecutionService(OwnerDelegator):
         logger.info(
             f"网盘订阅同步完成，共{action_name} {transferred_count} 个文件"
         )
+        # 每轮同步顺带执行存量核对自动回填：失败/空/处理中的历史记录反查
+        # 网盘，文件已就绪则回填为成功并补发通知（内部限流，异常不阻断）。
+        if self._sync_handler:
+            try:
+                self._sync_handler.reconcile_offline_history_backfill()
+            except Exception as error:
+                logger.warning(f"存量历史核对自动回填执行失败：{error}")
         pending_finalize_count = 0
         if self._sync_handler:
             pending_finalize_tasks = self._sync_handler.get_pending_finalize_tasks()

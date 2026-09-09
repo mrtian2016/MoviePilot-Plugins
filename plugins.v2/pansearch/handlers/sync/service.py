@@ -1634,6 +1634,8 @@ class SyncHandler:
                     risk_cooldown=self._transfer_risk_cooldown,
                     rename_items=rename_items,
                 )
+                if failed_ids:
+                    self._blacklist_dead_link_share(self._share_transfer, share_url)
                 if (
                         failed_ids and not success_ids
                         and bool(getattr(
@@ -1955,6 +1957,38 @@ class SyncHandler:
             if res_hash and res_hash in self._offline_blacklist:
                 return True
         return False
+
+    def _blacklist_dead_link_share(
+            self, share_service: Any, share_url: str
+    ) -> None:
+        """转存失败后核对确定性死链标记，命中则以单资源粒度拉黑一天。
+
+        分享服务在 _do_transfer 中记录 errno 4100018 / 链接过期等确定性
+        失败；这里取走标记并复用离线黑名单（拒绝订阅级兜底键），
+        避免每轮重新搜到同一死链反复失败。
+        """
+        consume = getattr(share_service, "consume_dead_link_failure", None)
+        if not consume or not share_url:
+            return
+        try:
+            failure = consume(share_url)
+        except Exception as error:
+            logger.debug(f"读取分享死链标记失败：{error}")
+            return
+        if not failure:
+            return
+        error_code = failure.get("error_code")
+        reason = (
+            f"分享链接已过期（错误码 {error_code}）"
+            if error_code not in (None, "")
+            else "分享链接已过期"
+        )
+        logger.info(
+            f"分享链接为确定性死链，已加入黑名单避免重复转存："
+            f"{self._resource_log_reference(share_url)}，"
+            f"{failure.get('error_msg') or reason}"
+        )
+        self._add_offline_blacklist(str(share_url), reason)
 
     def _queue_magnet_package(
             self,
@@ -2328,11 +2362,23 @@ class SyncHandler:
                 else f"media:{sub_key}" if sub_key else ""
             )
         )
+        # 哈希型（磁力/ed2k）记录必须携带真实哈希句柄；解析不到时显式落
+        # 无句柄标记并告警，消费端超时终审会按文件反查兜底。
+        no_handle = bool(
+            task_type in ("magnet", "ed2k")
+            and not re.fullmatch(r"[0-9A-Fa-f]{32,40}", pending_task_id)
+        )
+        if no_handle:
+            logger.warning(
+                f"哈希型离线任务未能解析真实句柄，超时终审将按文件反查兜底："
+                f"{file_name}（task_id={pending_task_id or '空'}）"
+            )
         return {
             **current,
             "pending_key": pending_key,
             "task_type": task_type,
             "task_id": pending_task_id,
+            "no_handle": no_handle,
             "source_sha1": source_hash,
             "share_url": share_url,
             "cloud_dir": cloud_dir,
@@ -3318,6 +3364,7 @@ class SyncHandler:
                     self._cleanup_cross_transfer_staging(source, "")
                     raise
                 if not staged:
+                    self._blacklist_dead_link_share(source_share, share_url)
                     self._cleanup_cross_transfer_staging(source, "")
                     return False
                 source_files = source.require(CloudDriveCapability.FILE_QUERY)
@@ -3407,11 +3454,14 @@ class SyncHandler:
                     # 只清理分享转存产生的源盘暂存文件，绝不删除用户选择的网盘文件。
                     self._cleanup_cross_transfer_staging(source, "", item)
         service = source.require(CloudDriveCapability.SHARE_TRANSFER) if source else self._share_transfer
-        return bool(service.transfer_file(
+        transferred = bool(service.transfer_file(
             share_url=share_url, file_id=file_item.get("id"),
             save_path=save_path, target_name=target_name,
             source_sha1=source_sha1,
         ))
+        if not transferred:
+            self._blacklist_dead_link_share(service, share_url)
+        return transferred
 
     @staticmethod
     def _reconcile_subscribe_physical_episodes(

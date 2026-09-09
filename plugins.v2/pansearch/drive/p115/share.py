@@ -2,7 +2,7 @@
 
 import copy
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.log import logger
 
@@ -443,7 +443,8 @@ class ShareService(OwnerDelegator):
             receive_code=receive_code,
             file_id="0",
             parent_id=parent_id,
-            save_path=save_path
+            save_path=save_path,
+            share_url=share_url,
         )
 
     def transfer_file(
@@ -490,7 +491,7 @@ class ShareService(OwnerDelegator):
             return False
         success = self._do_transfer(
             share_code=share_code, receive_code=receive_code, file_id=file_id,
-            parent_id=parent_id, save_path=save_path
+            parent_id=parent_id, save_path=save_path, share_url=share_url,
         )
         if success is None:
             if target_name and self.rename_file_by_sha1(
@@ -629,7 +630,8 @@ class ShareService(OwnerDelegator):
                 receive_code=receive_code,
                 file_id=file_id_str,
                 parent_id=parent_id,
-                save_path=save_path
+                save_path=save_path,
+                share_url=share_url,
             )
 
             if success is True:
@@ -663,6 +665,51 @@ class ShareService(OwnerDelegator):
         logger.debug(f"批量转存完成: 成功 {len(success_ids)} 个，失败 {len(failed_ids)} 个")
         return success_ids, failed_ids
 
+    DEAD_LINK_ERRNO = 4100018
+
+    @staticmethod
+    def is_deterministic_dead_link_error(error_msg: str, error_code: Any) -> bool:
+        """链接已过期等确定性死链：重试无意义，可按单资源粒度拉黑。"""
+        text = str(error_msg or "")
+        try:
+            code = int(error_code or 0)
+        except (TypeError, ValueError):
+            code = -1
+        return (
+                code == ShareService.DEAD_LINK_ERRNO
+                or "过期" in text
+                or "expired" in text.lower()
+        )
+
+    def _note_dead_link_failure(
+            self, share_url: str, error_msg: str, error_code: Any
+    ) -> None:
+        """记录确定性死链转存失败，供同步层以单资源粒度拉黑。"""
+        if not share_url:
+            return
+        cache = getattr(self, "_dead_link_failures", None)
+        if cache is None:
+            cache = {}
+            self._dead_link_failures = cache
+        if len(cache) >= 200:
+            cache.clear()
+        cache[str(share_url)] = {
+            "error_msg": str(error_msg or ""),
+            "error_code": error_code,
+            "time": time.time(),
+        }
+        logger.info(
+            f"分享链接转存失败且判定为确定性死链：{share_url}，"
+            f"{error_msg} (错误码: {error_code})"
+        )
+
+    def consume_dead_link_failure(self, share_url: str) -> Optional[Dict[str, Any]]:
+        """取走该分享链接最近一次确定性死链失败记录；无则返回 None。"""
+        cache = getattr(self, "_dead_link_failures", None)
+        if not cache:
+            return None
+        return cache.pop(str(share_url or ""), None)
+
     def _do_transfer(
             self,
             share_code: str,
@@ -670,7 +717,8 @@ class ShareService(OwnerDelegator):
             file_id: str,
             parent_id: int,
             save_path: str,
-            max_retries: int = None
+            max_retries: int = None,
+            share_url: str = "",
     ) -> bool:
         """
         执行实际转存操作（带重试）
@@ -733,6 +781,8 @@ class ShareService(OwnerDelegator):
                             continue
 
                     logger.error(f"转存失败: {error_msg} (错误码: {error_code})")
+                    if self.is_deterministic_dead_link_error(error_msg, error_code):
+                        self._note_dead_link_failure(share_url, error_msg, error_code)
                     return False
 
             except DRIVE_RETRY_EXCEPTIONS as e:

@@ -610,7 +610,35 @@ class ResourceTransferService(OwnerDelegator):
             f"{prefix}{resource_label}无效："
             f"{self._resource_log_reference(share_url)}，原因：{status.status_text}"
         )
+        # 链接过期 / errno 4100018 属确定性死链：以单资源粒度拉黑一天，
+        # 避免每轮重新搜到同一链接反复校验失败。仅普通分享链接进入此分支。
+        if (
+                not self._is_cloud_resource_url(share_url)
+                and not self._is_offline_url(share_url)
+                and not self._is_magnet_url(share_url)
+                and self._is_deterministic_dead_link_status(status)
+        ):
+            self._add_offline_blacklist(
+                share_url,
+                f"分享链接已过期（错误码 {getattr(status, 'error_code', 0) or ''}）".rstrip("（） "),
+            )
         return False
+
+    @staticmethod
+    def _is_deterministic_dead_link_status(status: Any) -> bool:
+        """分享状态是否为确定性死链（过期 / 4100018）。"""
+        if not status:
+            return False
+        if getattr(status, "is_expired", False):
+            return True
+        try:
+            error_code = int(getattr(status, "error_code", 0) or 0)
+        except (TypeError, ValueError):
+            error_code = 0
+        if error_code == 4100018:
+            return True
+        message = str(getattr(status, "error_message", "") or "")
+        return "过期" in message or "expired" in message.lower()
 
     def _validated_resource_files(
             self,
