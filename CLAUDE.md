@@ -89,3 +89,66 @@ Current version 1.4.0 (HEAD 8aee773). Target: 1.5.0 with 4 features.
 - Build output overwrites plugins.v2/pansearch/dist/assets/ (vite
   emptyOutDir). After build, verify remoteEntry.js exists.
 - Chinese text in JS/CSS files is normal; ensure UTF-8 no BOM.
+
+## v1.5.1 bugfix batch (context added 2026-09-09, HEAD dafed56 = v1.5.0)
+Goal: fix offline task status tracking (false failures + invisible 115
+download progress). Four tasks T1-T4, behavior spec in the round prompts.
+
+### Root evidence (verified by requirements owner on production container)
+- Table offline_pending_tasks in /config/plugins/PanSearch/pansearch.db:
+  all 7 pending rows carry task_id = "subscribe:910" (subscribe-level
+  fallback built in _build_pending_record, handlers/sync/service.py
+  ~2297-2313), not the real 115 clouddownload info_hash.
+- Postprocess matching (handlers/sync/postprocess.py): magnet branch
+  ~line 896 and ed2k branch ~944 do task_map.get(task_id.upper()); a
+  fallback id never matches -> the item sits until _OFFLINE_TIMEOUT
+  (service.py line 161, 30 min) and is then wrongly marked failed.
+  Logs prove the file was actually on the 115 drive.
+- Blacklist granularity bug: postprocess.py calls
+  _add_offline_blacklist(item.get("share_url") or item.get("task_id"),
+  reason) at ~900/909/939/951/960/975/984. If share_url is empty the
+  fallback can be "subscribe:<id>" which blacklists the WHOLE subscribe
+  for 1 day. subscribe-*/media-* keys must never enter the blacklist.
+- API flakiness: clouddownload task list intermittently HTTP 502 ->
+  drive/p115/offline.py get_offline_tasks (~84-105) falls back to a
+  10-min stale cache (refresh_ok=False is tracked and exposed by
+  get_offline_task_list_snapshot; postprocess reads offline_tasks_valid
+  at ~552 but the timeout-fail branches 907/957/981 ignore it).
+  Directory listing intermittently HTTP 405 -> p115 files.py
+  _iter_directory (p115client iterdir) fails, list_files_by_cid_checked
+  ~747 returns (False, []), so the sha1/dir reverse-lookup fallback is
+  also dead.
+- Deterministic dead links (errno 4100018, logged in drive/p115/share.py
+  ~735 "link expired") get re-discovered and re-fail every round,
+  inflating failure counts. history records: 53 success / 43 failed /
+  7 processing, and the 7 processing rows carry an EMPTY status string
+  -> frontend has nothing to show.
+
+### Key code landmarks (v1.5.0 HEAD)
+- drive/p115/offline.py: add_offline_download (~291, returns bool, calls
+  add_offline_downloads_batch), batch (~305-448) already parses
+  data.result info_hash per url and injects synthetic tasks into the
+  cache; _format_offline_task (~30-64) yields id/percent/state;
+  _format_offline_status (~140) maps state to Chinese text.
+- handlers/sync/service.py: _queue_magnet_package ~2090 calls
+  add_offline_download and only uses the bool; _add_offline_blacklist
+  ~1902; _OFFLINE_TIMEOUT line 161; _pending_identity ~2201 derives
+  info_hash from the url via _offline_hash.
+- handlers/sync/postprocess.py: monitor_offline_strm_tasks ~444; share
+  branch already locates files by staging name and source_sha1 via
+  directory_snapshot (~579) -- reusable for a "file already exists"
+  final verdict before declaring timeout failure.
+- handlers/sync/history.py: _mark_offline_history_status_batch ~1388
+  can already flip records to success and collect platform records.
+- tests/test_wk1_logic.py: ast-extraction unit test harness usable for
+  new logic tests without importing app.*.
+
+### v1.5.1 guardrails
+- Do NOT regress v1.5.0 F1-F4 (pansou prefilter, max_transfer_links,
+  organize switch, kdocs cache). Do NOT touch plugins.v2/p115subsearch/.
+- Frontend only if strictly required to surface progress fields; then
+  rebuild dist in the same round (node 22 available).
+- Version bump last: package.v2.json + __init__.py plugin_version =
+  1.5.1 plus a Chinese v1.5.1 history entry in __init__.py.
+- py_compile each edited file immediately; commit per task with Chinese
+  messages. Do not commit scratch files.
