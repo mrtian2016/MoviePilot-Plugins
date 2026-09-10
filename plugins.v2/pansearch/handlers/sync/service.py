@@ -2536,6 +2536,11 @@ class SyncHandler:
                 else f"media:{sub_key}" if sub_key else ""
             )
         )
+        # 终审所需指纹：ED2K 为文件哈希、Magnet 为 info_hash；旧 pending
+        # 记录缺该键时按空串兼容，消费端一律用 .get 读取（v1.5.4 T2）。
+        pending_info_hash = str(
+            info_hash or current.get("info_hash") or ""
+        ).upper()
         # 哈希型（磁力/ed2k）记录必须携带真实哈希句柄；解析不到时显式落
         # 无句柄标记并告警，消费端超时终审会按文件反查兜底。
         no_handle = bool(
@@ -2552,6 +2557,7 @@ class SyncHandler:
             "pending_key": pending_key,
             "task_type": task_type,
             "task_id": pending_task_id,
+            "info_hash": pending_info_hash,
             "no_handle": no_handle,
             "source_sha1": source_hash,
             "share_url": share_url,
@@ -2732,7 +2738,10 @@ class SyncHandler:
             skip_history: bool = False,
     ) -> Tuple[Optional[Path], str]:
         strm_path = None
-        if not staging_dir:
+        # 云下载类资源（ED2K/Magnet）提交成功只代表任务已进入115离线队列，
+        # 绝不能凭终审前的 STRM 命中直接落“成功”，必须统一登记 offline_pending
+        # 交由后处理实证文件落盘（v1.5.4 T2）。
+        if not staging_dir and not self._is_offline_url(share_url):
             strm_path = self._generate_strm(
                 cloud_dir,
                 file_name,
@@ -2867,7 +2876,11 @@ class SyncHandler:
         ready_items: List[Dict[str, Any]] = []
         for item in items:
             result_key = str(item["result_key"])
-            if item.get("staging_dir"):
+            # 离线下载资源必须先登记 pending（同 Magnet 路径），不得走
+            # STRM 快速通道提前落终态成功（v1.5.4 T2）。
+            if item.get("staging_dir") or self._is_offline_url(
+                    str(item.get("share_url") or "")
+            ):
                 queued_items.append(item)
                 continue
             cloud_dir = item["cloud_dir"]

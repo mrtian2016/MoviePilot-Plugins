@@ -1274,6 +1274,11 @@ class HistoryService(OwnerDelegator):
         源哈希在中转目录与最终目录反查文件是否已在 115 网盘就绪；就绪则
         回填为成功并补发通知。目录接口瞬态错误时本轮跳过该条，不误判。
         每轮最多核对 limit 条，近期核对过的键做内存缓存避免全量列目录。
+
+        v1.5.4 T4 预留挂钩点：ED2K/Magnet 假成功（提交即成功、网盘无文件）
+        的反查降级不在本轮；此处已具备按文件名/source_sha1 反查网盘的能力，
+        T4 只需把"下载中 + pending 已消失 + 文件不存在"的记录纳入
+        _OFFLINE_BACKFILL_STATUSES 并降级为失败/等待。
         """
         if (
                 not self._get_data

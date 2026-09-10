@@ -144,18 +144,58 @@ class Dian115SearchService(OwnerDelegator):
             season = 0
         return [season] if season >= 0 else []
 
-    @staticmethod
-    def _resource_type(share: Dict[str, Any]) -> str:
-        if str(share.get("share_kind") or "").strip().lower() != "offline":
-            return "115"
-        resource_type = str(share.get("offline_type") or "").strip().lower()
-        return resource_type if resource_type in {"ed2k", "magnet"} else ""
+    # 离线链接可能落在多个字段名上，且链接本身是比 share_kind/offline_type
+    # 更权威的类型信号。
+    _OFFLINE_LINK_FIELDS = (
+        "url", "offline_url", "offline_link", "download_url",
+        "ed2k_url", "magnet_url", "ed2k", "magnet", "link",
+    )
+    _OFFLINE_LINK_RE = re.compile(r"^(?:ed2k://|magnet:\?)", re.IGNORECASE)
 
-    @staticmethod
-    def _share_url(share: Dict[str, Any]) -> str:
-        resource_type = Dian115SearchService._resource_type(share)
+    @classmethod
+    def _offline_url_type(cls, value: Any) -> str:
+        """从链接文本识别云下载类型（ed2k/magnet），无法识别返回空串。"""
+        text = str(value or "").strip()
+        if not cls._OFFLINE_LINK_RE.match(text):
+            return ""
+        return "ed2k" if text[:7].lower() == "ed2k://" else "magnet"
+
+    @classmethod
+    def _offline_link_candidates(cls, share: Dict[str, Any]):
+        """按已知字段名产出可能的离线链接，供类型识别与取值复用。"""
+        for key in cls._OFFLINE_LINK_FIELDS:
+            value = share.get(key)
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    yield str(item or "").strip()
+            else:
+                yield str(value or "").strip()
+
+    @classmethod
+    def _resource_type(cls, share: Dict[str, Any]) -> str:
+        declared = str(share.get("offline_type") or "").strip().lower()
+        if declared in {"ed2k", "magnet"}:
+            return declared
+        # 链接本身能识别时必须按离线处理：否则会被当成普通115分享，
+        # 走"提交即成功"的旧路径（v1.5.4 T2 事故 E286）。
+        for value in cls._offline_link_candidates(share):
+            detected = cls._offline_url_type(value)
+            if detected:
+                return detected
+        if str(share.get("share_kind") or "").strip().lower() == "offline":
+            return ""
+        return "115"
+
+    @classmethod
+    def _share_url(cls, share: Dict[str, Any]) -> str:
+        resource_type = cls._resource_type(share)
         if resource_type in {"ed2k", "magnet"}:
-            return str(share.get("url") or "").strip()
+            # 离线分享必须返回真正的离线链接，绝不允许回退到115分享页：
+            # 否则一次仅"提交"的离线任务会被当成下载完成（v1.5.4 T2）。
+            for value in cls._offline_link_candidates(share):
+                if cls._offline_url_type(value):
+                    return value
+            return ""
         direct = str(share.get("url_115") or share.get("url") or "").strip()
         if direct:
             return direct

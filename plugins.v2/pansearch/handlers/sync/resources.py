@@ -695,10 +695,59 @@ class ResourceTransferService(OwnerDelegator):
             log_prefix="快速识别",
         )
 
-    def _transfer_history_status(self, success: bool, share_url: str) -> str:
+    @staticmethod
+    def _is_offline_resource_meta(resource: Any) -> bool:
+        """资源元数据是否声明为云下载类（ED2K/Magnet 离线任务）。
+
+        兼容 dian115 等积分源把离线类型放在 resource_type / pan_type /
+        offline_type / share_kind 的多种写法；缺字段按非离线处理。
+        """
+        if not isinstance(resource, Mapping):
+            resource = dict(resource or {}) if resource else {}
+        for key in ("resource_type", "pan_type", "offline_type"):
+            if str(resource.get(key) or "").strip().lower() in {"ed2k", "magnet"}:
+                return True
+        return str(resource.get("share_kind") or "").strip().lower() == "offline"
+
+    def _is_cloud_download_resource(
+            self,
+            share_url: str = "",
+            *extra_urls: Any,
+            resource: Any = None,
+    ) -> bool:
+        """是否为云下载类资源（离线下载）：提交成功不等于下载成功。
+
+        只凭单一 share_url 判定会在“资源元数据是 ED2K、链接字段却是分享页”
+        时漏判，从而把一次离线提交当成终态成功（v1.5.4 T2 事故）。因此同时
+        检查资源元数据与调用方透出的所有候选链接（含逐文件 url）。
+        """
+        if self._is_offline_resource_meta(resource):
+            return True
+        for value in (share_url, *extra_urls):
+            if value and self._is_offline_url(value):
+                return True
+        return False
+
+    def _transfer_history_status(
+            self,
+            success: bool,
+            share_url: str,
+            *extra_urls: Any,
+            resource: Any = None,
+    ) -> str:
+        """转存后历史状态：云下载类资源提交成功只允许落“下载中”。
+
+        “成功”只能由后处理实证文件落盘后回写（v1.5.4 T2）。
+        """
         if not success:
             return "失败"
-        return "下载中" if self._is_offline_url(share_url) else "成功"
+        return (
+            "下载中"
+            if self._is_cloud_download_resource(
+                share_url, *extra_urls, resource=resource
+            )
+            else "成功"
+        )
 
     @staticmethod
     def _supported_resource_type(

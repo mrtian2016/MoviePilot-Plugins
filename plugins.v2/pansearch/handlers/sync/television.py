@@ -685,7 +685,11 @@ class TelevisionSyncProcessor(OwnerDelegator):
                             history_item = self._build_transfer_history_item(
                                 mediainfo=mediainfo,
                                 subscribe=subscribe,
-                                status=self._transfer_history_status(success, item_share_url),
+                                status=self._transfer_history_status(
+                                    success, item_share_url,
+                                    item["file"].get("url"),
+                                    resource=item.get("resource"),
+                                ),
                                 share_url=item_share_url,
                                 file_name=item["target_name"],
                                 source_file_name=file_name,
@@ -706,7 +710,12 @@ class TelevisionSyncProcessor(OwnerDelegator):
                                 if pending_key:
                                     history_item["finalize_key"] = pending_key
                                     history_item["status"] = (
-                                        "下载中" if self._is_ed2k_url(item_share_url)
+                                        "下载中"
+                                        if self._is_cloud_download_resource(
+                                            item_share_url,
+                                            item["file"].get("url"),
+                                            resource=item.get("resource"),
+                                        )
                                         else "处理中"
                                     )
                                 completed_missing_episodes.add(episode)

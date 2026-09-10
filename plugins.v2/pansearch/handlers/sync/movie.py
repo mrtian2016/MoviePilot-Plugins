@@ -544,7 +544,10 @@ class MovieSyncProcessor(OwnerDelegator):
                         history_item = self._build_transfer_history_item(
                             mediainfo=mediainfo,
                             subscribe=subscribe,
-                            status=self._transfer_history_status(success, share_url),
+                            status=self._transfer_history_status(
+                                success, share_url,
+                                matched_file.get("url"), resource=resource,
+                            ),
                             share_url=share_url,
                             file_name=target_name,
                             source_file_name=file_name,
@@ -626,7 +629,12 @@ class MovieSyncProcessor(OwnerDelegator):
                             if pending_key:
                                 history_item["finalize_key"] = pending_key
                                 history_item["status"] = (
-                                    "下载中" if self._is_offline_url(share_url)
+                                    "下载中"
+                                    if self._is_cloud_download_resource(
+                                        share_url,
+                                        matched_file.get("url"),
+                                        resource=resource,
+                                    )
                                     else "处理中"
                                 )
                             if strm_path:
