@@ -178,3 +178,40 @@ download progress). Four tasks T1-T4, behavior spec in the round prompts.
   1.5.1 plus a Chinese v1.5.1 history entry in __init__.py.
 - py_compile each edited file immediately; commit per task with Chinese
   messages. Do not commit scratch files.
+
+### v1.5.3 briefing (2026-09-10, baseline 77cc867, T1-T4)
+- Prod incident: 30min offline window misjudged slow 115 downloads as
+  failed; 4200045 "already exists" recorded as failure; failures lack reason.
+- Test cmd: /vol4/1000/hermes/workspaces/crawler-tools/venv/bin/python
+  -m pytest plugins.v2/pansearch/tests/ -q  (73 passed baseline at 77cc867)
+- HARD: no commit, no push, no version bump. Developer commits per T.
+- HARD: never add abstract members to core/cloud.py shared contracts;
+  tests/test_v152_provider_contract.py must stay green. Do not touch
+  drive/p123, drive/guangya, plugins.v2/p115subsearch/.
+- py_compile every edited file immediately.
+- T1 core: handlers/sync/service.py L161 _OFFLINE_TIMEOUT = 30*60;
+  handlers/sync/postprocess.py timeout branches ~L1011/1084/1135/1850
+  (reason strings hardcode "30 分钟"); v1.5.1 already has
+  _offline_timeout_file_verdict, _offline_timeout_should_defer,
+  _persist_offline_progress, _schedule_finalize_retry, real info_hash
+  via get_offline_tasks. DB: core/database/models.py
+  OfflinePendingTask pending_key PK + JSON payload; manager.py init_db
+  create_all + alembic update_db; alembic/versions is EMPTY -> if you
+  need a new column, prefer payload-JSON state + PRAGMA-checked ALTER
+  with silent degradation for old DBs. Config panel fields live in
+  core/api/registration.py get_form (L59); defaults in core/config.py
+  transfer section (~L261-282); new key offline_download_timeout_minutes
+  default 120, backward compatible.
+- T2 core: drive/p115/share.py 4200045 paths L479/504/582/644/649/768-770
+  mostly handled; find where single-file channel still maps "exists" to
+  failure; handlers/sync/service.py _transfer_episode_items L1421 /
+  _transfer_episode_batch L1479 = success source. "exists" must count as
+  transferred success, INFO log, no failure record.
+- T3 core: core/history.py + all callers writing "失败"/failed status;
+  payload JSON gains fail_reason (missing key on old rows must not crash);
+  every failure path logs >=1 WARNING with subscribe/episode/reason;
+  batch timeouts emit one summary WARNING.
+- T4 core: v1.5.1 reconcile_offline_history_backfill in
+  handlers/sync/history.py (~L1248); ready-verdict log at L1215 already
+  INFO; audit the rest of the backfill chain, promote DEBUG to INFO with
+  record id + evidence (dir/filename); add a test asserting INFO output.
