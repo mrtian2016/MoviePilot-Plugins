@@ -1,0 +1,1 @@
+function c(t,n={}){if(typeof window>"u"||typeof window.EventSource!="function")return null;const r=encodeURIComponent(t||"PanSearch"),e=new window.EventSource(`/api/v1/plugin/${r}/runtime/stream`,{withCredentials:!0});return e.onopen=()=>n.onOpen?.(),e.onerror=o=>n.onError?.(o),e.onmessage=o=>{try{n.onRuntime?.(JSON.parse(o.data))}catch(i){n.onInvalidData?.(i)}},e}export{c};

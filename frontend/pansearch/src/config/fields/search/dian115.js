@@ -1,0 +1,112 @@
+export function createDian115Groups(options = {}) {
+  return [
+    {
+      tab: "dian115",
+      title: "Dian115 账号",
+      icon: "mdi-account-key-outline",
+      hint: "使用浏览器仿真完成 Turnstile 登录并维护访问状态。",
+      fields: [
+        {
+          key: "dian115_account_info",
+          type: "account",
+          accountKey: "search:dian115",
+          data: options.searchAccounts?.dian115 || {},
+          compact: true,
+          cols: 12,
+        },
+        {
+          key: "dian115_base_url",
+          label: "服务地址",
+          cols: 12,
+        },
+        {
+          key: "dian115_email",
+          label: "登录邮箱",
+          cols: 6,
+        },
+        {
+          key: "dian115_password",
+          label: "登录密码",
+          type: "password",
+          cols: 6,
+        },
+        {
+          key: "test_dian115",
+          label: "测试搜索",
+          type: "test-source",
+          source: "dian115",
+          cols: 12,
+        },
+      ],
+    },
+    {
+      tab: "dian115",
+      title: "Dian115 积分解锁",
+      icon: "mdi-ticket-confirmation-outline",
+      hint: "默认不解锁收费资源；开启后仅在候选被实际采用且双重预算充足时扣费。",
+      fields: [
+        {
+          key: "dian115_auto_unlock",
+          label: "允许积分解锁",
+          type: "switch",
+          cols: 4,
+        },
+        {
+          key: "dian115_max_unlock_points",
+          label: "单次积分总预算",
+          hint: "限制一次同步任务内 Dian115 的累计解锁积分。",
+          type: "number",
+          min: 0,
+          cols: 4,
+          show: (config) => config.dian115_auto_unlock,
+        },
+        {
+          key: "dian115_max_points_per_sub",
+          label: "单订阅解锁预算",
+          hint: "按订阅累计并持久化；订阅完成后清除对应积分账本。",
+          type: "number",
+          min: 0,
+          cols: 4,
+          show: (config) => config.dian115_auto_unlock,
+        },
+      ],
+    },
+    {
+      tab: "dian115",
+      title: "搜索与风控",
+      icon: "mdi-shield-search",
+      hint: "登录和资源接口共用请求限速；详情结果另有短期内存缓存。",
+      fields: [
+        {
+          key: "dian115_candidate_limit",
+          label: "候选上限",
+          type: "number",
+          min: 1,
+          max: 20,
+          cols: 4,
+        },
+        {
+          key: "dian115_unlocks_per_minute",
+          label: "每分钟解锁次数",
+          hint: "仅限制解锁接口；免费取链接也计入，默认 6 次。",
+          type: "number",
+          min: 1,
+          max: 10,
+          suffix: "次",
+          cols: 4,
+        },
+        {
+          key: "dian115_request_interval",
+          label: "请求间隔",
+          hint: "所有 Dian115 接口共享该基础间隔，并自动加入随机抖动。",
+          type: "number",
+          min: 0.2,
+          max: 10,
+          step: 0.2,
+          suffix: "秒",
+          cols: 4,
+        },
+      ],
+    },
+  ]
+}
