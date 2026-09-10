@@ -438,6 +438,7 @@ class ShareService(OwnerDelegator):
         logger.info(f"转存分享到目录 ID: {parent_id} ({save_path})")
 
         # 执行转存 (file_id=0 表示转存所有内容)
+        # 4200045/文件已存在时 _do_transfer 返回 None，同样视同转存成功。
         return self._do_transfer(
             share_code=share_code,
             receive_code=receive_code,
@@ -445,7 +446,7 @@ class ShareService(OwnerDelegator):
             parent_id=parent_id,
             save_path=save_path,
             share_url=share_url,
-        )
+        ) is not False
 
     def transfer_file(
             self,
@@ -475,9 +476,7 @@ class ShareService(OwnerDelegator):
                 log_unresolved=False,
             )
             if str(file_id) in existing:
-                logger.debug(
-                    f"115 暂存目录已存在目标文件，跳过重复转存：{target_name}"
-                )
+                logger.info(f"文件已存在，视同转存成功：{target_name}")
                 return True
         info = self.extract_share_info(share_url)
         share_code = info.get("share_code")
@@ -494,18 +493,18 @@ class ShareService(OwnerDelegator):
             parent_id=parent_id, save_path=save_path, share_url=share_url,
         )
         if success is None:
-            if target_name and self.rename_file_by_sha1(
+            # 4200045/文件已存在：目标文件已在网盘，一律视同转存成功并复用
+            # 既有文件；即使暂缺 target_name/source_sha1（历史重试等单文件
+            # 渠道）也不允许落入失败分支。
+            if target_name and not self.rename_file_by_sha1(
                     save_path, source_sha1, target_name
             ):
-                return True
-            source_hash = self._normalize_hash(source_sha1)
-            if target_name and len(source_hash) == 40:
                 logger.info(
                     f"115返回文件已存在，目标文件尚未可见，"
                     f"交由既有后处理复核：{target_name}"
                 )
-                return True
-            return False
+            logger.info(f"文件已存在，视同转存成功：{target_name or file_id}")
+            return True
         if success and target_name:
             if not self.rename_file_by_sha1(save_path, source_sha1, target_name):
                 logger.info(f"转存已完成，文件重命名进入后处理队列：{target_name}")
@@ -578,9 +577,15 @@ class ShareService(OwnerDelegator):
                 success_ids.extend(
                     file_id for file_id in file_ids if str(file_id) in existing
                 )
-                logger.debug(
-                    f"115 暂存目录已存在 {len(existing)} 个目标文件，"
-                    "本轮直接复用并跳过重复转存"
+                existing_names = [
+                    str(
+                        (rename_items.get(str(file_id)) or {}).get("target_name")
+                        or file_id
+                    )
+                    for file_id in file_ids if str(file_id) in existing
+                ]
+                logger.info(
+                    f"文件已存在，视同转存成功：{'、'.join(existing_names)}"
                 )
             unresolved_set = set(unresolved)
             precheck_set = {str(file_id) for file_id in precheck_ids}
@@ -645,9 +650,16 @@ class ShareService(OwnerDelegator):
                 # 创建独立目录并执行重命名、移动、删除。未即时可见的文件由
                 # 既有后处理按 SHA1 在暂存目录和最终目录中继续复核。
                 success_ids.extend(page_ids)
-                logger.warning(
-                    f"第 {page_num} 页返回文件已存在，目录复核后确认 "
-                    f"{len(ready)} 个，待后处理复核 {len(unresolved)} 个"
+                page_names = [
+                    str(
+                        (rename_items or {}).get(str(file_id), {}).get("target_name")
+                        or file_id
+                    )
+                    for file_id in page_ids
+                ]
+                logger.info(
+                    f"文件已存在，视同转存成功：{'、'.join(page_names)}；"
+                    f"目录复核后确认 {len(ready)} 个，待后处理复核 {len(unresolved)} 个"
                 )
             else:
                 logger.warning(
@@ -666,6 +678,15 @@ class ShareService(OwnerDelegator):
         return success_ids, failed_ids
 
     DEAD_LINK_ERRNO = 4100018
+    EXISTS_ERRNO = 4200045
+
+    @staticmethod
+    def is_exists_error(error_code: Any) -> bool:
+        """4200045：接收目标已存在，等价于转存成功（复用既有文件）。"""
+        try:
+            return int(error_code or 0) == ShareService.EXISTS_ERRNO
+        except (TypeError, ValueError):
+            return False
 
     @staticmethod
     def is_deterministic_dead_link_error(error_msg: str, error_code: Any) -> bool:
@@ -764,10 +785,13 @@ class ShareService(OwnerDelegator):
                     error_msg = resp.get("error", "未知错误")
                     error_code = resp.get("errno", resp.get("errcode", 0))
 
-                    # 检查是否是重复文件
-                    if "重复" in error_msg or "已存在" in error_msg:
-                        logger.warning(
-                            f"115返回文件已存在，等待目标目录复核: {file_id}，"
+                    # 检查是否是重复文件（4200045 = 接收目标已存在，转存即成功）
+                    if (
+                            "重复" in error_msg or "已存在" in error_msg
+                            or self.is_exists_error(error_code)
+                    ):
+                        logger.info(
+                            f"文件已存在，视同转存成功: {file_id}，"
                             f"错误码: {error_code}"
                         )
                         return None

@@ -1090,6 +1090,7 @@ class TestDeterministicDeadLink(unittest.TestCase):
             "drive/p115/share.py",
             {
                 "is_deterministic_dead_link_error",
+                "is_exists_error",
                 "_note_dead_link_failure",
                 "consume_dead_link_failure",
                 "_do_transfer",
@@ -1110,6 +1111,7 @@ class TestDeterministicDeadLink(unittest.TestCase):
     def _make_share_service(self, resp=None):
         class _FakeShareService:
             DEAD_LINK_ERRNO = 4100018
+            EXISTS_ERRNO = 4200045
 
         class Stub:
             pass
