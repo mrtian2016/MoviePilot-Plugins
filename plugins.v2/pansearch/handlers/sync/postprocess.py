@@ -1032,6 +1032,13 @@ class PostprocessService(OwnerDelegator):
                     item, pending_key, strm_path, media, media_data
                 )
 
+            # 本轮失败终态汇总：每项 (file_name, reason)，循环后输出一条汇总告警，
+            # 避免批量超时场景逐条刷屏（v1.5.3 T3）。
+            round_failure_entries: List[Tuple[str, str]] = []
+
+            def record_round_failure(fail_name: str, fail_reason: str) -> None:
+                round_failure_entries.append((fail_name, fail_reason))
+
             for pending_key in due_keys:
                 item = pending.get(pending_key)
                 if not item:
@@ -1048,6 +1055,9 @@ class PostprocessService(OwnerDelegator):
                     self._mark_offline_history_status(pending_key, "失败", reason)
                     self._notify_finalize_dead(item, pending_key)
                     pending.pop(pending_key, None)
+                    record_round_failure(
+                        str(item.get("file_name") or pending_key), reason
+                    )
                     failed += 1
                     continue
                 task_type = str(item.get("task_type") or "share")
@@ -1068,6 +1078,7 @@ class PostprocessService(OwnerDelegator):
                         self._cleanup_failed_offline_task(item, reason)
                         self._mark_offline_history_status(pending_key, "失败", reason)
                         pending.pop(pending_key, None)
+                        record_round_failure(file_name, reason)
                         failed += 1
                         continue
                     if not task_done:
@@ -1106,6 +1117,7 @@ class PostprocessService(OwnerDelegator):
                                 self._cleanup_failed_offline_task(item, reason)
                                 self._mark_offline_history_status(pending_key, "失败", reason)
                                 pending.pop(pending_key, None)
+                                record_round_failure(file_name, reason)
                                 failed += 1
                                 continue
                         else:
@@ -1135,8 +1147,11 @@ class PostprocessService(OwnerDelegator):
                         notification_contexts.append((item, pending_key))
                         completed += len(finalized)
                     else:
+                        reason = "Magnet 下载完成但未匹配到目标媒体文件"
+                        logger.warning(f"{reason}：{file_name}")
                         self._add_offline_blacklist(item.get("share_url") or item.get("task_id"),
-                                                    "Magnet 下载完成但未匹配到目标媒体文件")
+                                                    reason)
+                        record_round_failure(file_name, reason)
                         failed += 1
                     continue
                 if task_type == "ed2k":
@@ -1146,10 +1161,10 @@ class PostprocessService(OwnerDelegator):
                     )
                     if task and bool(task.get("failed")):
                         reason = "离线下载失败"
-                        logger.error(f"{reason}：{file_name}")
                         self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
                         self._mark_offline_history_status(pending_key, "失败", reason)
                         pending.pop(pending_key, None)
+                        record_round_failure(file_name, reason)
                         failed += 1
                         continue
                     if task is not None and not task_done:
@@ -1187,10 +1202,10 @@ class PostprocessService(OwnerDelegator):
                                         self._persist_offline_progress(item, task)
                                     self._schedule_finalize_retry(item, now)
                                     continue
-                                logger.error(f"{reason}：{file_name}")
                                 self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
                                 self._mark_offline_history_status(pending_key, "失败", reason)
                                 pending.pop(pending_key, None)
+                                record_round_failure(file_name, reason)
                                 failed += 1
                                 continue
                             # 终审 "ready" 时同轮落入下方统一收尾，不再重试。
@@ -1212,6 +1227,7 @@ class PostprocessService(OwnerDelegator):
                             self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
                             self._mark_offline_history_status(pending_key, "失败", reason)
                             pending.pop(pending_key, None)
+                            record_round_failure(file_name, reason)
                             failed += 1
                             continue
                     if not task_done:
@@ -1249,10 +1265,10 @@ class PostprocessService(OwnerDelegator):
                                         self._persist_offline_progress(item, task)
                                     self._schedule_finalize_retry(item, now)
                                     continue
-                                logger.error(f"{reason}：{file_name}")
                                 self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
                                 self._mark_offline_history_status(pending_key, "失败", reason)
                                 pending.pop(pending_key, None)
+                                record_round_failure(file_name, reason)
                                 failed += 1
                                 continue
                             # 终审 "ready" 时同轮落入下方统一收尾，不再重试。
@@ -1346,6 +1362,7 @@ class PostprocessService(OwnerDelegator):
                         reason = "网盘文件已保存但30分钟内仍无法在转存路径定位"
                         self._mark_offline_history_status(pending_key, "失败", reason)
                         pending.pop(pending_key, None)
+                        record_round_failure(file_name, reason)
                         failed += 1
                     else:
                         self._schedule_finalize_retry(item, now)
@@ -1483,9 +1500,23 @@ class PostprocessService(OwnerDelegator):
                     reason = "文件已下载但30分钟内仍无法生成 STRM"
                     self._mark_offline_history_status(pending_key, "失败", reason)
                     pending.pop(pending_key, None)
+                    record_round_failure(file_name, reason)
                     failed += 1
                 else:
                     self._schedule_finalize_retry(item, now)
+
+            # 批量失败只输出一条汇总告警（数量 + 原因分布），避免逐条刷屏。
+            if round_failure_entries:
+                reason_counts: Dict[str, int] = {}
+                for _, fail_reason in round_failure_entries:
+                    reason_counts[fail_reason] = reason_counts.get(fail_reason, 0) + 1
+                reason_summary = "；".join(
+                    f"{fail_reason}（{count} 项）"
+                    for fail_reason, count in reason_counts.items()
+                )
+                logger.warning(
+                    f"本轮离线后处理判定失败 {len(round_failure_entries)} 项：{reason_summary}"
+                )
 
             if upgrade_delete_batch:
                 delete_ids = list(dict.fromkeys(
@@ -1611,7 +1642,12 @@ class PostprocessService(OwnerDelegator):
         """读取完成后的真实文件树，只移动实际匹配的媒体文件。"""
         mediainfo, media_data = self._restore_pending_media_context(item, pending_key)
         if not mediainfo:
-            self._cleanup_failed_offline_task(item, "媒体元数据不存在")
+            reason = "媒体元数据不存在"
+            logger.warning(
+                f"Magnet 下载完成但{reason}：{item.get('file_name')}"
+            )
+            self._cleanup_failed_offline_task(item, reason)
+            self._mark_offline_history_status(pending_key, "失败", reason)
             return []
         subscribe_id = int(item.get("subscribe_id") or 0)
         subscribe = (

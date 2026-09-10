@@ -1505,6 +1505,8 @@ class SyncHandler:
             return []
         if self._stop_requested():
             return []
+        # file_id -> 失败原因，随 results 透出供历史落库 failure_reason（v1.5.3 T3）。
+        failure_reasons: Dict[str, str] = {}
 
         file_ids = [str(item["file"]["id"]) for item in selected_items]
         cloud_resource = self._is_cloud_resource_url(share_url)
@@ -1584,11 +1586,18 @@ class SyncHandler:
                             logger.error(
                                 f"跨盘转存批次已熔断：{item['target_name']}，{error_text}"
                             )
+                            failure_reasons[file_id] = f"跨盘转存批次熔断：{error_text}"
                             return file_id, False
                         logger.error(
                             f"跨盘转存文件失败：{item['target_name']}，{error}"
                         )
+                        failure_reasons[file_id] = f"跨盘转存异常：{error}"
                         return file_id, False
+                    if not success:
+                        failure_reasons[file_id] = (
+                            str(item["file"].get("transfer_failure_reason") or "").strip()
+                            or "跨盘转存失败"
+                        )
                     if not success and batch_stop_requested():
                         return file_id, None
                     return file_id, success
@@ -1648,6 +1657,15 @@ class SyncHandler:
                 )
                 if failed_ids:
                     self._blacklist_dead_link_share(self._share_transfer, share_url)
+                    risk_blocked = bool(getattr(
+                        self._share_transfer, "transfer_risk_blocked", False
+                    )) and not success_ids
+                    batch_fail_reason = (
+                        "分享批量转存触发风控，已进入冷却"
+                        if risk_blocked else "分享批量转存失败：链接可能已失效"
+                    )
+                    for failed_id in failed_ids:
+                        failure_reasons[str(failed_id)] = batch_fail_reason
                 if (
                         failed_ids and not success_ids
                         and bool(getattr(
@@ -1739,6 +1757,7 @@ class SyncHandler:
                     f"文件已转存但后处理任务登记失败：{item['target_name']}"
                 )
                 success = False
+                failure_reasons[file_id] = "文件已转存但后处理任务登记失败"
             if success and strm_path:
                 self._media_server_notifier.notify(
                     path=strm_path,
@@ -1750,6 +1769,7 @@ class SyncHandler:
                 "file_id": file_id,
                 "success": success,
                 "pending_key": pending_key,
+                "reason": failure_reasons.get(file_id, ""),
             })
         return results
 
@@ -3314,6 +3334,8 @@ class SyncHandler:
             stop_requested: Optional[Callable[[], bool]] = None,
             media_type: str = "",
     ) -> bool:
+        # 转存失败原因回写 file_item，供调用方落 history failure_reason（v1.5.3 T3）。
+        file_item.pop("transfer_failure_reason", None)
         should_stop = stop_requested or self._stop_requested
         cloud_resource = self._is_cloud_resource_url(share_url)
         source = self._resource_provider_for_url(share_url)
@@ -3335,6 +3357,9 @@ class SyncHandler:
                         f"跨盘转存跳过：{source.name} -> {self._cloud_drive.name}，"
                         f"媒体类型 {item_media_type} 未启用"
                     )
+                    file_item["transfer_failure_reason"] = (
+                        f"跨盘转存未启用媒体类型 {item_media_type}"
+                    )
                     return False
             required = (
                     (self._cross_transfer_enabled or is_manual_override)
@@ -3353,16 +3378,19 @@ class SyncHandler:
                     f"无法跨盘转存单个文件：{source.name} -> "
                     f"{self._cloud_drive.name}，请检查跨盘开关和网盘能力"
                 )
+                file_item["transfer_failure_reason"] = "跨盘转存开关未开启或网盘能力不满足"
                 return False
             if cloud_resource:
                 item = self._cloud_file_from_dict(file_item)
                 if not item.id:
                     logger.warning(f"无法跨盘整理文件：{source.name} 文件 ID 为空")
+                    file_item["transfer_failure_reason"] = "源网盘文件 ID 为空"
                     return False
             else:
                 source_file_id = str(file_item.get("id") or "").strip()
                 if not source_file_id:
                     logger.warning(f"无法跨盘转存单个文件：{source.name} 文件 ID 为空")
+                    file_item["transfer_failure_reason"] = "源网盘文件 ID 为空"
                     return False
                 staged_path = self._cross_transfer_staging_path(source.key)
                 source_share = source.require(CloudDriveCapability.SHARE_TRANSFER)
@@ -3378,6 +3406,9 @@ class SyncHandler:
                 if not staged:
                     self._blacklist_dead_link_share(source_share, share_url)
                     self._cleanup_cross_transfer_staging(source, "")
+                    file_item["transfer_failure_reason"] = (
+                        f"分享转存到源盘暂存失败：{source.name}"
+                    )
                     return False
                 source_files = source.require(CloudDriveCapability.FILE_QUERY)
                 staged_name = file_item.get("name") or target_name
@@ -3393,6 +3424,9 @@ class SyncHandler:
                         f"{staged_path}/{staged_name}"
                     )
                     self._cleanup_cross_transfer_staging(source, "")
+                    file_item["transfer_failure_reason"] = (
+                        f"源盘暂存文件不可见：{staged_path}/{staged_name}"
+                    )
                     return False
             if source_sha1 and not item.sha1:
                 item = CloudFile(
@@ -3454,25 +3488,35 @@ class SyncHandler:
                             f"跨盘转存已由用户停止：{source.name} -> "
                             f"{self._cloud_drive.name}"
                         )
+                        file_item["transfer_failure_reason"] = "跨盘转存已由用户停止"
                     else:
-                        logger.error(
-                            f"跨盘转存失败：{source.name} -> {self._cloud_drive.name}，"
-                            f"阶段={completed_task.get('phase') or 'unknown'}，"
-                            f"原因={completed_task.get('error') or completed_task.get('message') or '未知错误'}"
+                        cross_reason = (
+                                f"跨盘转存失败：{source.name} -> {self._cloud_drive.name}，"
+                                f"阶段={completed_task.get('phase') or 'unknown'}，"
+                                f"原因={completed_task.get('error') or completed_task.get('message') or '未知错误'}"
                         )
+                        logger.error(cross_reason)
+                        file_item["transfer_failure_reason"] = cross_reason
                 return success
             finally:
                 if not cloud_resource:
                     # 只清理分享转存产生的源盘暂存文件，绝不删除用户选择的网盘文件。
                     self._cleanup_cross_transfer_staging(source, "", item)
         service = source.require(CloudDriveCapability.SHARE_TRANSFER) if source else self._share_transfer
-        transferred = bool(service.transfer_file(
-            share_url=share_url, file_id=file_item.get("id"),
-            save_path=save_path, target_name=target_name,
-            source_sha1=source_sha1,
-        ))
+        try:
+            transferred = bool(service.transfer_file(
+                share_url=share_url, file_id=file_item.get("id"),
+                save_path=save_path, target_name=target_name,
+                source_sha1=source_sha1,
+            ))
+        except Exception as error:
+            file_item["transfer_failure_reason"] = f"分享转存异常：{error}"
+            raise
         if not transferred:
             self._blacklist_dead_link_share(service, share_url)
+            file_item["transfer_failure_reason"] = (
+                "分享转存失败：链接可能已失效或触发风控"
+            )
         return transferred
 
     @staticmethod

@@ -558,6 +558,17 @@ class MovieSyncProcessor(OwnerDelegator):
                         )
                         history.append(history_item)
 
+                        if not success:
+                            # 转存失败必须携带原因落历史并告警（v1.5.3 T3）。
+                            history_item["failure_reason"] = (
+                                str(matched_file.get("transfer_failure_reason") or "").strip()
+                                or "转存失败"
+                            )
+                            logger.warning(
+                                f"电影转存失败：{mediainfo.title}，{file_name}，"
+                                f"原因：{history_item['failure_reason']}"
+                            )
+
                         if success:
                             transferred_count += 1
                             movie_transferred = True

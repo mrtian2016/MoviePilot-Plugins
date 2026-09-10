@@ -1624,7 +1624,15 @@ class HistoryService(OwnerDelegator):
                     continue
                 item["status"] = status
                 item.pop("finalize_key", None)
-                if reason:
+                if status == "失败":
+                    # 失败终态必须携带原因：优先本次原因，退回历史已有原因，
+                    # 兜底占位文案，绝不允许失败记录无原因（v1.5.3 T3）。
+                    item["failure_reason"] = (
+                            str(reason or "").strip()
+                            or str(item.get("failure_reason") or "").strip()
+                            or "未提供失败原因"
+                    )
+                elif reason:
                     item["failure_reason"] = reason
                 else:
                     item.pop("failure_reason", None)
@@ -1657,9 +1665,11 @@ class HistoryService(OwnerDelegator):
         )
         if not removed_keys:
             return 0
-        self._mark_offline_history_status_batch(
-            removed_keys, "失败", "后处理任务已由用户删除"
+        reason = "后处理任务已由用户删除"
+        logger.warning(
+            f"离线后处理任务被用户删除，对应历史标记失败：{len(removed_keys)} 项，原因：{reason}"
         )
+        self._mark_offline_history_status_batch(removed_keys, "失败", reason)
         self._notify_offline_pending_changed(pending_count)
         return len(removed_keys)
 
@@ -1670,9 +1680,11 @@ class HistoryService(OwnerDelegator):
         )
         if not removed_keys:
             return 0
-        self._mark_offline_history_status_batch(
-            removed_keys, "失败", "后处理任务已由用户停止"
+        reason = "后处理任务已由用户停止"
+        logger.warning(
+            f"离线后处理任务被用户停止，对应历史标记失败：{len(removed_keys)} 项，原因：{reason}"
         )
+        self._mark_offline_history_status_batch(removed_keys, "失败", reason)
         self._notify_offline_pending_changed(pending_count)
         return len(removed_keys)
 

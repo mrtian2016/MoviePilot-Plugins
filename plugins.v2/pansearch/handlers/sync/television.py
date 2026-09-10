@@ -733,7 +733,17 @@ class TelevisionSyncProcessor(OwnerDelegator):
 
                                 batch_success_episodes.append(episode)
                             else:
-                                logger.error(f"转存失败：{mediainfo.title} S{season:02d}E{episode:02d}")
+                                # 转存失败必须携带原因落历史并告警（v1.5.3 T3）。
+                                reason = (
+                                    str(transfer_result.get("reason")
+                                        or item["file"].get("transfer_failure_reason")
+                                        or "").strip() or "转存失败"
+                                )
+                                history_item["failure_reason"] = reason
+                                logger.warning(
+                                    f"转存失败：{mediainfo.title} "
+                                    f"S{season:02d}E{episode:02d}，原因：{reason}"
+                                )
 
                         if completed_missing_episodes:
                             if discover_manual_episodes:

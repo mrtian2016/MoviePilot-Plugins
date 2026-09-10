@@ -634,6 +634,18 @@ class UpgradeService(OwnerDelegator):
                                 f"{upgrade_log_prefix} 转存成功 E{episode:02d}"
                                 f" {old_score}→{new_score}（{file_name}）"
                             )
+                        else:
+                            # 洗版失败也必须留下原因，供历史页排查（v1.5.3 T3）。
+                            reason = (
+                                str(transfer_result.get("reason")
+                                    or item["file"].get("transfer_failure_reason")
+                                    or "").strip() or "转存失败"
+                            )
+                            history_item["failure_reason"] = reason
+                            logger.warning(
+                                f"{upgrade_log_prefix} 转存失败 E{episode:02d}"
+                                f"（{file_name}），原因：{reason}"
+                            )
 
                     if batch_success_episodes:
                         completed_episode_set = set(batch_success_episodes)
