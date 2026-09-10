@@ -158,7 +158,9 @@ class SyncHandler:
 
     _OFFLINE_PENDING_KEY = "pending_offline_strm"
     _OFFLINE_CHECK_DELAYS = (10, 20, 40, 60, 120, 300)
-    _OFFLINE_TIMEOUT = 30 * 60
+    # 离线下载超时兜底默认（分钟）；实际以实例配置
+    # offline_download_timeout_minutes 覆盖（见 __init__）。
+    _OFFLINE_TIMEOUT = 120 * 60
     _FILE_FINALIZE_TIMEOUT = 30 * 60
     _OFFLINE_MONITOR_LEASE_SECONDS = 15 * 60
     _MEDIA_RECOGNITION_CACHE_LIMIT = 256
@@ -233,6 +235,7 @@ class SyncHandler:
             pansou_client: Any = None,
             pansou_check_enabled: bool = False,
             max_transfer_links: int = 0,
+            offline_download_timeout_minutes: int = 120,
     ):
         """
         初始化同步处理器
@@ -270,6 +273,7 @@ class SyncHandler:
         :param pansou_client: PanSou 客户端（用于链接有效性检测，渠道无关）
         :param pansou_check_enabled: 是否启用 PanSou 链接有效性检测层
         :param max_transfer_links: 单订阅单轮累计成功转存链接数上限，0 表示不限制
+        :param offline_download_timeout_minutes: 离线下载超时分钟数，慢下载不再按 30 分钟误判
         """
         self._cloud_drive = cloud_drive
         self._cross_transfer_enabled = bool(cross_transfer_enabled)
@@ -347,6 +351,14 @@ class SyncHandler:
         self._pansou_client = pansou_client
         self._pansou_check_enabled = bool(pansou_check_enabled)
         self._max_transfer_links = max(0, int(max_transfer_links or 0))
+        try:
+            timeout_minutes = max(
+                1, min(int(offline_download_timeout_minutes or 120), 1440)
+            )
+        except (TypeError, ValueError):
+            timeout_minutes = 120
+        # 实例配置覆盖类常量；旧调用方/测试未传参时回落 120 分钟。
+        self._OFFLINE_TIMEOUT = timeout_minutes * 60
         self._self_heal_interval = self_heal_interval
         self._enable_cloud_upgrade = enable_cloud_upgrade
         self._enable_pt_upgrade = bool(enable_pt_upgrade)

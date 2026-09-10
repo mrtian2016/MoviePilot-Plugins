@@ -270,6 +270,7 @@ class UIConfig:
             "batch_size": 20,
             "batch_interval": 3,
             "transfer_risk_cooldown": 1800,
+            "offline_download_timeout_minutes": 120,
             "skip_other_season_dirs": True,
             "enable_cloud_upgrade": False,
             "enable_pt_upgrade": False,

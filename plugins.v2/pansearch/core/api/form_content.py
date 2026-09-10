@@ -75,6 +75,7 @@ class FormContent:
         "cross_transfer_media_types": "允许跨盘转存类型", "local_resource_path": "本地媒体根路径",
         "cross_transfer_download_path": "跨盘中继缓存目录", "cross_transfer_download_threads": "下载线程数",
         "cross_transfer_max_concurrent": "同时跨盘任务数", "transfer_risk_cooldown": "转存风控冷却（秒）",
+        "offline_download_timeout_minutes": "离线下载超时（分钟）",
         "strm_generate_enabled": "转存后直接生成 STRM", "nfo_scrape_enabled": "刮削生成 NFO",
         "image_scrape_enabled": "刮削生成图片", "strm_base_url": "STRM 基础地址",
         "strm_url_template": "STRM URL 模板", "media_server_refresh_enabled": "启用入库通知",
@@ -285,7 +286,8 @@ class FormContent:
                                                             "include_subscribes"}:
                 group = "订阅与榜单"
             elif any(token in key for token in
-                     ("transfer", "strm", "nfo", "image_scrape", "media_server", "platform_media")):
+                     ("transfer", "strm", "nfo", "image_scrape", "media_server", "platform_media",
+                      "offline")):
                 group = "转存与媒体库"
             elif any(token in key for token in
                      ("search", "pansou", "dian115", "juying", "pinglian", "seedhub",

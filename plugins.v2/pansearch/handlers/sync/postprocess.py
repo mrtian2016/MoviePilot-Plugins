@@ -38,6 +38,8 @@ class PostprocessService(OwnerDelegator):
         "{}\n\n连续 {} 次后处理失败，已停止自动重试，"
         "请检查网盘文件与媒体目录状态"
     )
+    # 超时后连续零增长复查轮数上限，达到即判定卡死失败。
+    _OFFLINE_ZERO_GROWTH_ROUNDS = 3
 
     @staticmethod
     def _postprocess_task_id(item: Dict[str, Any]) -> str:
@@ -235,6 +237,68 @@ class PostprocessService(OwnerDelegator):
         超时分支必须暂缓判定，等待接口恢复后再下结论。
         """
         return (not tasks_valid) and verdict != "ready"
+
+    def _offline_timeout_fail_reason(self, prefix: str) -> str:
+        """超时失败文案使用实际配置的分钟数，不再硬编码 30 分钟。"""
+        minutes = max(1, int(self._OFFLINE_TIMEOUT // 60))
+        return f"{prefix}离线下载超过 {minutes} 分钟未完成，已退出"
+
+    def _offline_slow_download_verdict(
+            self,
+            item: Dict[str, Any],
+            task: Optional[Dict[str, Any]],
+            prefix: str,
+            file_name: str = "",
+    ) -> Tuple[str, str]:
+        """超时终审 "missing" 后的慢下载判定。
+
+        任务仍在 115 离线列表且进度有增长 -> ("retry_pending", "")：
+        保留 pending 记录、仅安排下一轮复查，不拉黑、不失败通知。
+        任务已从列表消失（且文件终审未就绪）-> ("fail", 超时原因)。
+        任务仍在但连续 _OFFLINE_ZERO_GROWTH_ROUNDS 轮复查进度零增长
+        -> ("fail", 卡死原因)。进度基线与零增长轮数持久化在 pending
+        载荷 JSON（timeout_progress_percent / offline_zero_growth_rounds），
+        旧记录缺键时按首轮基线 / 0 轮处理。
+        """
+        if task is None:
+            # 任务句柄不存在：网盘侧已消失且文件终审未就绪，真实失败。
+            return "fail", self._offline_timeout_fail_reason(prefix)
+        try:
+            percent = max(0.0, min(float(task.get("percent") or 0.0), 100.0))
+        except (TypeError, ValueError):
+            percent = 0.0
+        baseline = item.get("timeout_progress_percent")
+        if baseline is None:
+            # 首次超时复查：记录进度基线，先继续等待。
+            item["timeout_progress_percent"] = percent
+            item["offline_zero_growth_rounds"] = 0
+            logger.info(
+                f"离线任务超时仍在列表（{percent:.0f}%），记录基线继续等待：{file_name}"
+            )
+            return "retry_pending", ""
+        try:
+            baseline = float(baseline)
+        except (TypeError, ValueError):
+            baseline = 0.0
+        if percent > baseline:
+            item["timeout_progress_percent"] = percent
+            item["offline_zero_growth_rounds"] = 0
+            logger.info(
+                f"离线任务超时仍在下载（{baseline:.0f}% -> {percent:.0f}%），继续等待：{file_name}"
+            )
+            return "retry_pending", ""
+        rounds = int(item.get("offline_zero_growth_rounds") or 0) + 1
+        item["offline_zero_growth_rounds"] = rounds
+        if rounds >= self._OFFLINE_ZERO_GROWTH_ROUNDS:
+            reason = (
+                f"115 离线下载连续 {rounds} 轮复查进度零增长"
+                f"（{percent:.0f}%），判定卡死退出"
+            )
+            return "fail", reason
+        logger.info(
+            f"离线任务超时且进度未增长（{percent:.0f}%，第 {rounds} 轮），继续等待：{file_name}"
+        )
+        return "retry_pending", ""
 
     @staticmethod
     def _upgrade_backup_name(file_name: str, task_id: str) -> str:
@@ -1028,7 +1092,16 @@ class PostprocessService(OwnerDelegator):
                                 self._schedule_finalize_retry(item, now)
                                 continue
                             else:
-                                reason = "Magnet 离线下载超过 30 分钟未完成，已退出"
+                                slow_verdict, reason = (
+                                    self._offline_slow_download_verdict(
+                                        item, task, "Magnet ",
+                                        file_name=file_name,
+                                    )
+                                )
+                                if slow_verdict == "retry_pending":
+                                    # 慢下载仍在推进：不拉黑、不失败，仅复查。
+                                    self._schedule_finalize_retry(item, now)
+                                    continue
                                 self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
                                 self._cleanup_failed_offline_task(item, reason)
                                 self._mark_offline_history_status(pending_key, "失败", reason)
@@ -1102,7 +1175,18 @@ class PostprocessService(OwnerDelegator):
                                 self._schedule_finalize_retry(item, now)
                                 continue
                             else:
-                                reason = "115 离线下载超过 30 分钟未完成，已退出"
+                                slow_verdict, reason = (
+                                    self._offline_slow_download_verdict(
+                                        item, task, "115 ",
+                                        file_name=file_name,
+                                    )
+                                )
+                                if slow_verdict == "retry_pending":
+                                    # 慢下载仍在推进：保留进度快照并复查，不失败。
+                                    if task is not None:
+                                        self._persist_offline_progress(item, task)
+                                    self._schedule_finalize_retry(item, now)
+                                    continue
                                 logger.error(f"{reason}：{file_name}")
                                 self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
                                 self._mark_offline_history_status(pending_key, "失败", reason)
@@ -1153,7 +1237,18 @@ class PostprocessService(OwnerDelegator):
                                 self._schedule_finalize_retry(item, now)
                                 continue
                             else:
-                                reason = "115 离线下载超过 30 分钟未完成，已退出"
+                                slow_verdict, reason = (
+                                    self._offline_slow_download_verdict(
+                                        item, task, "115 ",
+                                        file_name=file_name,
+                                    )
+                                )
+                                if slow_verdict == "retry_pending":
+                                    # 慢下载仍在推进：保留进度快照并复查，不失败。
+                                    if task is not None:
+                                        self._persist_offline_progress(item, task)
+                                    self._schedule_finalize_retry(item, now)
+                                    continue
                                 logger.error(f"{reason}：{file_name}")
                                 self._add_offline_blacklist(item.get("share_url") or item.get("task_id"), reason)
                                 self._mark_offline_history_status(pending_key, "失败", reason)

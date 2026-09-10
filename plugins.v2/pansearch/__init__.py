@@ -1131,6 +1131,17 @@ class PanSearch(_PluginBase):
                 )
             except (TypeError, ValueError):
                 self._max_transfer_links = 5
+            # 离线下载超时分钟数；旧配置缺省该键时回落默认 120 分钟。
+            try:
+                self._offline_download_timeout_minutes = max(
+                    1,
+                    min(
+                        int(config.get("offline_download_timeout_minutes", 120) or 120),
+                        1440,
+                    ),
+                )
+            except (TypeError, ValueError):
+                self._offline_download_timeout_minutes = 120
             self._strm_generate_enabled = bool(config.get("strm_generate_enabled", True))
             self._nfo_scrape_enabled = bool(config.get("nfo_scrape_enabled", False))
             self._image_scrape_enabled = bool(config.get("image_scrape_enabled", False))
@@ -1853,6 +1864,9 @@ class PanSearch(_PluginBase):
             pansou_client=getattr(self, "_pansou_client", None),
             pansou_check_enabled=self._pansou_check_enabled,
             max_transfer_links=self._max_transfer_links,
+            offline_download_timeout_minutes=(
+                self._offline_download_timeout_minutes
+            ),
         )
         self._sync_handler.reconcile_orphaned_history()
 
