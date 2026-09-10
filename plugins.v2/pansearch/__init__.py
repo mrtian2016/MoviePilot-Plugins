@@ -115,11 +115,12 @@ class PanSearch(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/odomu/MoviePilot-Plugins/main/icons/cloud.png"
     # 插件版本
-    # v1.5.3：慢下载误判根治——离线超时提至可配置 120 分钟，超时先查 115
-    # 真实任务态（下载中暂缓、消失且无文件判死、零增长 3 轮判卡死）；
-    # 转存命中「文件已存在」（4200045）视同成功禁止落失败记录；
-    # 失败历史必带 failure_reason 与 WARNING 告警；存量回填 INFO 补标识。
-    plugin_version = "1.5.3"
+    # v1.5.4：终审定位失败根治——终审窗口与离线超时同源可配，判死前全盘
+    # 检索兜底（命中视同定位成功，未命中零进展 3 轮暂缓）；ED2K/magnet
+    # 提交成功不再落终态成功，统一登记 pending 走下载中；失败写入全链路
+    # 收口必带 failure_reason+WARNING 且成功优先消解矛盾记录；手动通道
+    # pending 统一 schema、过期必检，存量核对全盘兜底+假成功反查降级。
+    plugin_version = "1.5.4"
     # 插件作者
     plugin_author = "odomu"
     # 作者主页
