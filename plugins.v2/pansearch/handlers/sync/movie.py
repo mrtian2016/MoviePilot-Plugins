@@ -622,8 +622,9 @@ class MovieSyncProcessor(OwnerDelegator):
                                 transferred_count = max(0, transferred_count - 1)
                                 movie_transferred = False
                                 movie_history_score = 0
-                                logger.error(
-                                    f"文件已转存但后处理任务登记失败：{target_name}"
+                                logger.warning(
+                                    f"文件已转存但后处理任务登记失败：{target_name}，"
+                                    f"原因：{history_item['failure_reason']}"
                                 )
                                 continue
                             if pending_key:

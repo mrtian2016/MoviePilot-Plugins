@@ -78,6 +78,9 @@ class HistoryService(OwnerDelegator):
             "anilist_id": getattr(mediainfo, "anilist_id", None),
             "media_source": media_source,
             "media_id": media_id or media_data.get("media_id"),
+            "subscribe_id": (
+                getattr(subscribe, "id", None) if subscribe is not None else None
+            ),
             "category": getattr(mediainfo, "category", None),
             "episode_group": getattr(mediainfo, "episode_group", None),
             "image": mediainfo.get_poster_image(),
@@ -682,21 +685,42 @@ class HistoryService(OwnerDelegator):
                 if str(record.get("status") or "") == "失败"
                 if (scope := self._upgrade_scope_identity(record))
             }
+            # v1.5.4 T3：同媒体季集已有成功记录时，失败写入不得制造矛盾终态。
+            success_scope_index = {
+                scope: index
+                for index, record in enumerate(history)
+                if str(record.get("status") or "") == "成功"
+                if (scope := self._upgrade_scope_identity(record))
+            }
+            warned_failures: Set[str] = set()
             for record in records:
                 incoming = copy.deepcopy(record)
                 self._ensure_history_record_id(incoming)
                 identity = self._history_record_identity(incoming)
                 index = record_index.get(identity) if identity else None
                 scope = self._upgrade_scope_identity(incoming)
-                if index is None and self._is_upgrade_history(incoming) and scope:
+                incoming_status = str(incoming.get("status") or "")
+                incoming_is_upgrade = self._is_upgrade_history(incoming)
+                if index is None and incoming_is_upgrade and scope:
                     index = upgrade_scope_index.get(scope)
                 if index is None and scope and self._is_workflow_history(incoming):
                     index = workflow_scope_index.get(scope)
                 # 换源重试可能改变分享链接和源文件名；只复用同媒体季集的失败记录，
                 # 成功记录与普通多版本记录仍按精确身份隔离。
-                if index is None and scope and not self._is_upgrade_history(incoming):
-                    index = failed_scope_index.get(scope)
+                if index is None and scope and not incoming_is_upgrade:
+                    # v1.5.4 T3：失败优先并入同季集成功记录（同轮其他源已成功）。
+                    if (
+                            incoming_status == "失败"
+                            and scope in success_scope_index
+                            and not reopen_terminal
+                    ):
+                        index = success_scope_index[scope]
+                    else:
+                        index = failed_scope_index.get(scope)
                 if index is None:
+                    if incoming_status == "失败":
+                        self._ensure_history_failure_reason(incoming)
+                        self._warn_history_failure(incoming, warned_failures)
                     history.append(incoming)
                     platform_records.append(copy.deepcopy(incoming))
                     if identity:
@@ -705,19 +729,21 @@ class HistoryService(OwnerDelegator):
                         upgrade_scope_index[scope] = len(history) - 1
                         if self._is_workflow_history(incoming):
                             workflow_scope_index[scope] = len(history) - 1
-                    if str(incoming.get("status") or "") == "失败" and scope:
+                    if incoming_status == "成功":
+                        if scope:
+                            success_scope_index[scope] = len(history) - 1
+                    elif incoming_status == "失败" and scope:
                         failed_scope_index[scope] = len(history) - 1
                     continue
 
                 current = history[index]
                 current_status = str(current.get("status") or "")
-                incoming_status = str(incoming.get("status") or "")
                 merged = {**current, **incoming}
                 merged["task_types"] = sorted(
                     set(self._history_task_types(current))
                     | set(self._history_task_types(incoming))
                 )
-                if self._is_upgrade_history(incoming):
+                if incoming_is_upgrade:
                     merged["upgrade"] = True
                     merged["upgrade_count"] = max(
                         1, int(current.get("upgrade_count") or 0) + 1
@@ -738,7 +764,25 @@ class HistoryService(OwnerDelegator):
                             merged[state_key] = current[state_key]
                         else:
                             merged.pop(state_key, None)
-                if incoming_status != "失败":
+                # 成功优先于失败：该媒体季集此前已成功时，不因新的失败降级。
+                if (
+                        not incoming_is_upgrade
+                        and not reopen_terminal
+                        and current_status == "成功"
+                        and incoming_status == "失败"
+                ):
+                    merged["status"] = "成功"
+                    logger.warning(
+                        f"忽略矛盾失败记录，该媒体季集已成功："
+                        f"{self._history_failure_label(merged)}，"
+                        f"原因：{str(incoming.get('failure_reason') or '').strip() or '未提供失败原因'}"
+                    )
+                merged_status = str(merged.get("status") or "")
+                # 失败终态必带原因并告警；非失败状态清除历史原因残留。
+                if merged_status == "失败":
+                    self._ensure_history_failure_reason(merged)
+                    self._warn_history_failure(merged, warned_failures)
+                else:
                     merged.pop("failure_reason", None)
                 history[index] = merged
                 platform_records.append(copy.deepcopy(merged))
@@ -746,7 +790,11 @@ class HistoryService(OwnerDelegator):
                     upgrade_scope_index[scope] = index
                     if self._is_workflow_history(merged):
                         workflow_scope_index[scope] = index
-                    if incoming_status == "失败":
+                    if merged_status == "成功":
+                        success_scope_index[scope] = index
+                        if failed_scope_index.get(scope) == index:
+                            failed_scope_index.pop(scope, None)
+                    elif merged_status == "失败":
                         failed_scope_index[scope] = index
                     elif failed_scope_index.get(scope) == index:
                         failed_scope_index.pop(scope, None)
@@ -776,6 +824,50 @@ class HistoryService(OwnerDelegator):
             self._notify_offline_pending_changed(activated_pending_count)
         self._record_platform_transfer_histories(platform_records)
         return len(records)
+
+    @staticmethod
+    def _ensure_history_failure_reason(record: Dict[str, Any]) -> str:
+        """失败记录必带原因；旧记录缺 failure_reason 键时补占位，绝不崩溃。"""
+        reason = str(record.get("failure_reason") or "").strip()
+        if not reason:
+            reason = "未提供失败原因"
+            record["failure_reason"] = reason
+        return reason
+
+    @staticmethod
+    def _history_failure_label(record: Dict[str, Any]) -> str:
+        """失败告警标识：订阅/媒体 + 季集，便于定位具体条目。"""
+        try:
+            season = int(record.get("season") or 0)
+        except (TypeError, ValueError):
+            season = 0
+        try:
+            episode = int(record.get("episode") or 0)
+        except (TypeError, ValueError):
+            episode = 0
+        subscribe_id = str(record.get("subscribe_id") or "").strip()
+        title = str(
+            record.get("title") or record.get("file_name") or "未知媒体"
+        ).strip()
+        parts = [f"订阅#{subscribe_id}"] if subscribe_id else []
+        parts.append(title)
+        if season > 0:
+            parts.append(f"S{season:02d}")
+        if episode > 0:
+            parts.append(f"E{episode:02d}")
+        return " ".join(parts)
+
+    def _warn_history_failure(
+            self, record: Dict[str, Any], warned: Set[str]
+    ) -> None:
+        """任何失败写入至少产生一条 WARNING（含订阅/集数/原因）。"""
+        reason = self._ensure_history_failure_reason(record)
+        label = self._history_failure_label(record)
+        key = f"{label}|{reason}"
+        if key in warned:
+            return
+        warned.add(key)
+        logger.warning(f"历史记录写入失败状态：{label}，原因：{reason}")
 
     def compact_workflow_history(self) -> List[Dict[str, Any]]:
         """合并同一媒体季集的跨盘、洗版工作流记录并持久化。"""
@@ -3077,6 +3169,11 @@ class HistoryService(OwnerDelegator):
                         source_key, cached_source, verify_checksum=False,
                     ))
                     record["failure_reason"] = "缓存恢复上传失败"
+                    logger.warning(
+                        f"缓存恢复上传到目标网盘失败："
+                        f"{self._history_failure_label(record)}，"
+                        "原因：缓存恢复上传失败"
+                    )
                     self._save_data("history", history)
                     raise RuntimeError("缓存完整，但恢复上传到目标网盘失败")
             if not success:
@@ -3143,6 +3240,10 @@ class HistoryService(OwnerDelegator):
                     verify_checksum=False,
                 ))
             record["failure_reason"] = "重试转存失败"
+            logger.warning(
+                f"历史重试转存失败：{self._history_failure_label(record)}，"
+                "原因：重试转存失败"
+            )
             self._save_data("history", history)
             raise RuntimeError("重试转存失败")
 
@@ -3167,6 +3268,11 @@ class HistoryService(OwnerDelegator):
         if not strm_path and not pending_key:
             record["status"] = "失败"
             record["failure_reason"] = "文件已转存但后处理任务登记失败"
+            logger.warning(
+                f"文件已转存但无法登记后处理任务，历史标记失败："
+                f"{self._history_failure_label(record)}，"
+                "原因：文件已转存但后处理任务登记失败"
+            )
             self._save_data("history", history)
             raise RuntimeError("文件已转存，但无法登记后处理任务")
         record["file_name"] = target_name
