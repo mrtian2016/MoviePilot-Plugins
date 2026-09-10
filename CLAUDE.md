@@ -215,3 +215,56 @@ download progress). Four tasks T1-T4, behavior spec in the round prompts.
   handlers/sync/history.py (~L1248); ready-verdict log at L1215 already
   INFO; audit the rest of the backfill chain, promote DEBUG to INFO with
   record id + evidence (dir/filename); add a test asserting INFO output.
+
+
+### v1.5.4 briefing (2026-09-10, baseline 1e9714e, T1-T4)
+- Prod incidents (DB id149-153 + logs + code triple-confirmed):
+  1) 飞到我心上 E20 id151: finalize window judged dead though 115 already
+     saved the file; service.py L164 _FILE_FINALIZE_TIMEOUT = 30*60 is a
+     SECOND hardcoded window independent of v1.5.3 offline timeout;
+     postprocess.py L1362/L1500 reason strings hardcode "30分钟".
+  2) 完美世界 E286 id149: dian115 ED2K unlocked 19:34:02, 39s later history
+     wrote 成功 + subscribe progress 286 + transfer-done notification, but
+     file never landed (ED2K cannot finish in 39s). Submit-success was
+     treated as download-success. Must go through pending like magnet path
+     (_queue_magnet_package + _append_magnet_pending_history write 下载中).
+  3) 奥德赛 id153: manual cloud_link magnet submit 19:37:33 registered
+     offline_pending 19:38:14, next_check_at lapsed and it was never picked
+     up again; suspect schema mismatch between manual channel and subscribe
+     channel (missing fields -> every round skip).
+  4) 交锋 E10 id150: share-transfer fast-fail wrote 失败 with NO
+     failure_reason and NO WARNING though same round 4 files transferred;
+     v1.5.3 T3 has missed failure-write sites.
+- T1: wire _FILE_FINALIZE_TIMEOUT to offline_download_timeout_minutes
+  config (same source as _OFFLINE_TIMEOUT); dynamic minutes in reason text
+  (use minutes var not "30分钟"); before judging dead do full-pan search
+  fallback by source_sha1 then file name (p115 search/recursion): found ->
+  success (move into cloud_dir if movable, else record actual_path in
+  payload + INFO); not found -> defer per v1.5.3 T1 zero-progress-3-round
+  mechanism, not immediate fail.
+- T2: ED2K/magnet submit success must only write 下载中 + register
+  offline_pending (info_hash, cloud_dir, file_name, source_sha1,
+  subscribe_id); 成功 only after postprocess proves file landed. Find the
+  dian115 ED2K branch that writes success directly and unify.
+- T3: grep every write of 失败 into history (share fast-fail branch),
+  all must carry failure_reason + WARNING; if same episode succeeded via
+  another source in same round, success wins - no contradicting record.
+- T4: unify pending schema of manual-submit channel vs subscribe channel;
+  expired next_check_at pending must be re-checked every round; backfill
+  search extends to full-pan fallback (reuse T1 fn); reverse-audit T2
+  fake-success records: if file missing -> downgrade to 失败/等待 and fix
+  subscribe progress note.
+- HARD red lines: never add abstract members to core/cloud.py;
+  tests/test_v152_provider_contract.py must stay green (run inside
+  container: docker exec -i moviepilot-v2 /opt/venv/bin/python -m pytest
+  ...; host venv missing requests/app is env noise); no DB schema change -
+  new fields go into payload JSON with missing-key tolerance; do not touch
+  drive/p123, drive/guangya, plugins.v2/p115subsearch/.
+- Test cmd: /vol4/1000/hermes/workspaces/crawler-tools/venv/bin/python
+  -m pytest plugins.v2/pansearch/tests/ -q (127 passed baseline at
+  1e9714e); contract test via docker exec container python.
+- HARD: no commit, no push, no version bump inside claude rounds.
+  Developer commits per T. py_compile every edited file immediately.
+- Failure write sites inventory (postprocess.py): L1055/1079/1118/1165/
+  1206/1228/1269/1363/1501/1650/1668/1726 via _mark_offline_history_status;
+  history.py L1699/1714 batch; movie.py L615.
