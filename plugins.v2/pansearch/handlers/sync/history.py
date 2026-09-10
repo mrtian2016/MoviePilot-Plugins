@@ -1162,6 +1162,28 @@ class HistoryService(OwnerDelegator):
             return ""
         return f"{share_url}|{cloud_dir}|{file_name}"
 
+    @staticmethod
+    def _offline_backfill_record_label(record: Dict[str, Any]) -> str:
+        """回填 INFO 日志的记录标识：标题（剧集带季集，缺失退回文件名）。"""
+        title = str(record.get("title") or "").strip()
+        if not title:
+            return (
+                str(
+                    record.get("source_file_name")
+                    or record.get("file_name") or ""
+                ).strip()
+                or "未知记录"
+            )
+        if str(record.get("type") or "") == "电视剧":
+            try:
+                season = max(1, int(record.get("season") or 1))
+                episode = int(record.get("episode") or 0)
+            except (TypeError, ValueError):
+                season, episode = 1, 0
+            if episode > 0:
+                return f"{title} S{season:02d}E{episode:02d}"
+        return title
+
     def _offline_backfill_verdict(
             self,
             record: Dict[str, Any],
@@ -1213,6 +1235,7 @@ class HistoryService(OwnerDelegator):
             if candidate:
                 logger.info(
                     f"存量核对发现文件已在网盘就绪，自动回填为成功："
+                    f"{self._offline_backfill_record_label(record)} -> "
                     f"{cloud_dir}/{getattr(candidate, 'name', '') or names[0]}"
                 )
                 return "ready"
@@ -1346,9 +1369,13 @@ class HistoryService(OwnerDelegator):
             if repaired_records:
                 self._save_data("history", history)
         if repaired_records:
+            labels = "、".join(
+                self._offline_backfill_record_label(item)
+                for item in repaired_records
+            )
             logger.info(
                 f"存量核对自动回填：{len(repaired_records)} 条失败/处理中记录"
-                f"已在网盘就绪，已回填为成功并补发通知"
+                f"已在网盘就绪，已回填为成功并补发通知：{labels}"
             )
             self._record_platform_transfer_histories(repaired_records)
             self._send_finalized_batch(notification_details)

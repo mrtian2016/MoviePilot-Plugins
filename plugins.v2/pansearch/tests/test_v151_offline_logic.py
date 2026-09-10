@@ -865,6 +865,7 @@ class TestOfflineHistoryBackfill(unittest.TestCase):
                 "reconcile_offline_history_backfill",
                 "_offline_backfill_verdict",
                 "_offline_backfill_record_key",
+                "_offline_backfill_record_label",
                 "_offline_backfill_notification_detail",
             },
         )
