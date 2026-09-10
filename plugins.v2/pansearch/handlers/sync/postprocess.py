@@ -432,22 +432,107 @@ class PostprocessService(OwnerDelegator):
             )
         return len(activated_keys)
 
-    @staticmethod
+    def _normalize_pending_item(
+            self, item: Dict[str, Any], pending_key: str
+    ) -> List[str]:
+        """旧/异构 pending 记录缺字段时的兜底补齐。
+
+        手动提交通道历史版本只登记了少量字段，与订阅后处理通道 schema
+        不一致；轮次入口不能因为某一字段缺失就整轮跳过该记录。这里按
+        "可处理即可" 原则补齐定位所需字段并保留空值兜底，同时记录补齐
+        的字段名，交由调用方打一次 WARNING。返回本次补齐的字段名列表。
+        """
+        fixed: List[str] = []
+        task_type = str(item.get("task_type") or "").strip() or "share"
+        if item.get("task_type") != task_type:
+            item["task_type"] = task_type
+            fixed.append("task_type")
+        task_id = str(item.get("task_id") or "").strip()
+        if not task_id:
+            task_id = str(item.get("info_hash") or pending_key).strip()
+            item["task_id"] = task_id
+            fixed.append("task_id")
+        file_name = str(
+            item.get("file_name") or item.get("staging_name")
+            or item.get("source_file_name") or ""
+        ).strip()
+        if not file_name:
+            file_name = task_id or str(pending_key)
+            item["file_name"] = file_name
+            fixed.append("file_name")
+        cloud_dir = str(item.get("cloud_dir") or "").strip()
+        if not cloud_dir:
+            cloud_dir = str(item.get("staging_dir") or "/").rstrip("/") or "/"
+            item["cloud_dir"] = cloud_dir
+            fixed.append("cloud_dir")
+        staging_dir = str(item.get("staging_dir") or "").strip()
+        if not staging_dir:
+            item["staging_dir"] = cloud_dir
+            fixed.append("staging_dir")
+        if not str(item.get("staging_name") or "").strip():
+            item["staging_name"] = file_name
+            fixed.append("staging_name")
+        if "source_sha1" not in item:
+            item["source_sha1"] = ""
+            fixed.append("source_sha1")
+        if "info_hash" not in item:
+            item["info_hash"] = ""
+            fixed.append("info_hash")
+        if "subscribe_id" not in item:
+            item["subscribe_id"] = 0
+            fixed.append("subscribe_id")
+        if "next_check_at" not in item:
+            # 缺省视为立即到期：过期 pending 必须被下一轮必检。
+            item["next_check_at"] = 0.0
+            fixed.append("next_check_at")
+        if "history_ready" not in item:
+            item["history_ready"] = True
+            fixed.append("history_ready")
+        return fixed
+
     def _due_pending_keys(
+            self,
             pending: Dict[str, Dict[str, Any]],
             now: float,
             force: bool = False,
             pending_keys: Optional[Set[str]] = None,
     ) -> List[str]:
+        """选出本轮必检的 pending 键。
+
+        - next_check_at 已过期（或缺失）必检必处理；
+        - 上一轮异常退出残留的 _monitor_until 租约不会永久挡住已过期记录
+          （租约只是并发保护，实际轮次由 _offline_monitor_lock 串行）；
+        - 缺字段记录先经 _normalize_pending_item 兜底补齐，单字段缺失绝不
+          整轮跳过，每个键只打一次 WARNING。
+        """
         selected = set(pending_keys or [])
-        return [
-            key
-            for key, item in pending.items()
-            if (not selected or key in selected)
-               and bool(item.get("history_ready", True))
-               and now >= float(item.get("_monitor_until") or 0)
-               and (force or now >= float(item.get("next_check_at") or 0))
-        ]
+        warned = getattr(self, "_pending_schema_warned", None)
+        if warned is None:
+            warned = set()
+            self._pending_schema_warned = warned
+        due: List[str] = []
+        for key, item in pending.items():
+            if selected and key not in selected:
+                continue
+            fixed = self._normalize_pending_item(item, key)
+            if fixed and key not in warned:
+                warned.add(key)
+                logger.warning(
+                    f"pending 记录字段缺失，已按兜底补齐并继续处理："
+                    f"{key}（补齐：{','.join(fixed)}）"
+                )
+            if not bool(item.get("history_ready", True)):
+                continue
+            next_check_at = float(item.get("next_check_at") or 0)
+            expired = next_check_at <= 0 or now >= next_check_at
+            if not force and not expired:
+                # next_check_at 未到期：本轮跳过，等待下次复查。
+                continue
+            # next_check_at 已过期（或强制刷新）：必检必处理。即使上一轮
+            # 异常退出残留了 _monitor_until 租约，也不得因此长期不再拾取
+            # （v1.5.4 T4：奥德赛 id153 事故）。
+            due.append(key)
+        return due
 
     @staticmethod
     def _media_context_key(item: Dict[str, Any]) -> Optional[Tuple[Any, ...]]:

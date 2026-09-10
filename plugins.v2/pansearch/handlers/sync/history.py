@@ -1276,16 +1276,53 @@ class HistoryService(OwnerDelegator):
                 return f"{title} S{season:02d}E{episode:02d}"
         return title
 
+    @staticmethod
+    def _offline_record_locate_fields(
+            record: Dict[str, Any]
+    ) -> Tuple[List[str], str]:
+        """从历史记录提取定位所需字段：候选文件名列表与 source_sha1。"""
+        names: List[str] = []
+        for name in (
+                record.get("staging_name"),
+                record.get("file_name"),
+                record.get("source_file_name"),
+        ):
+            text = str(name or "").strip()
+            if text and text not in names:
+                names.append(text)
+        source_sha1 = str(record.get("source_sha1") or "").upper()
+        return names, source_sha1
+
+    def _full_pan_search_available(self) -> bool:
+        """当前网盘与宿主是否具备全盘兜底检索能力（不可用时不得判死）。"""
+        if not callable(getattr(self, "_full_pan_locate_file", None)):
+            return False
+        try:
+            query = getattr(self, "_cloud_query", None)
+        except Exception:
+            return False
+        return callable(getattr(query, "list_files_recursive", None))
+
     def _offline_backfill_verdict(
             self,
             record: Dict[str, Any],
             directory_snapshot,
+            purpose: str = "backfill",
     ) -> str:
         """与超时终审同款的反查：按文件名或源哈希在中转与最终目录找文件。
 
-        返回 "ready"（文件已就绪）、"defer"（目录接口瞬态错误，本轮跳过）
-        或 "missing"（确实不存在）。
+        目录列举全部有效但未命中时，再复用终审 T1 的全盘检索能力兜底，
+        覆盖文件已被整理/移动/改名到其他目录的场景。返回 "ready"（文件
+        已就绪）、"defer"（目录接口瞬态错误，本轮跳过）或 "missing"
+        （确实不存在）。
         """
+
+        def entry_name(entry: Any) -> str:
+            value = getattr(entry, "name", None)
+            if not value and isinstance(entry, dict):
+                value = entry.get("name") or entry.get("file_name")
+            return str(value or "").strip()
+
         staging_dir = str(
             record.get("staging_dir") or record.get("cloud_dir") or "/"
         ).rstrip("/") or "/"
@@ -1326,9 +1363,28 @@ class HistoryService(OwnerDelegator):
                 )
             if candidate:
                 logger.info(
-                    f"存量核对发现文件已在网盘就绪，自动回填为成功："
+                    f"存量核对发现文件已在网盘就绪，"
+                    f"{'确认历史成功状态' if purpose == 'audit' else '自动回填为成功'}："
                     f"{self._offline_backfill_record_label(record)} -> "
-                    f"{cloud_dir}/{getattr(candidate, 'name', '') or names[0]}"
+                    f"{cloud_dir}/{entry_name(candidate) or (names[0] if names else '')}"
+                )
+                return "ready"
+        # 目录内未命中：走全盘检索兜底（仅当宿主具备递归检索能力）。
+        locate = getattr(self, "_full_pan_locate_file", None)
+        if callable(locate):
+            located = locate(
+                record,
+                file_name=names[0] if names else "",
+                source_sha1=source_sha1,
+            )
+            if located:
+                target, actual_dir = located
+                logger.info(
+                    f"存量核对全盘检索命中文件，"
+                    f"{'确认历史成功状态' if purpose == 'audit' else '自动回填为成功'}："
+                    f"{self._offline_backfill_record_label(record)} -> "
+                    f"{str(actual_dir or '/').rstrip('/') or '/'}/"
+                    f"{entry_name(target) or (names[0] if names else '')}"
                 )
                 return "ready"
         return "missing"
@@ -1359,18 +1415,84 @@ class HistoryService(OwnerDelegator):
             detail["episodes"] = [episode] if episode > 0 else []
         return detail
 
+    _OFFLINE_SUCCESS_AUDIT_RESOURCE_TYPES = {"magnet", "ed2k", "offline"}
+
+    @classmethod
+    def _offline_success_audit_candidate(cls, record: Dict[str, Any]) -> bool:
+        """判定成功记录是否属于需要反向回查的离线"提交即成功"高危项。
+
+        仅对确实可能"提交成功≠下载成功"的记录回查：残留 finalize_key
+        （成功终态本应清除）、资源类型为磁力/ED2K，或分享链接本身就是
+        磁力/ED2K。普通分享转存成功不做全盘回查，避免误降级。
+        """
+        if str(record.get("status") or "").strip() != "成功":
+            return False
+        if str(record.get("finalize_key") or "").strip():
+            return True
+        resource_type = str(record.get("resource_type") or "").strip().lower()
+        if resource_type in cls._OFFLINE_SUCCESS_AUDIT_RESOURCE_TYPES:
+            return True
+        share_url = str(record.get("share_url") or "").strip().lower()
+        return share_url.startswith("magnet:") or share_url.startswith("ed2k://")
+
+    def _offline_success_reverse_verdict(
+            self,
+            record: Dict[str, Any],
+            directory_snapshot,
+    ) -> str:
+        """T2 修复前假成功记录的反向回查结论。
+
+        返回 "confirmed"（文件确实在网盘，成功无误）、"missing"
+        （经目录与全盘检索均未找到，确证假成功）或 "defer"（检索能力
+        不足或接口瞬态错误，绝不在证据不足时误降级）。
+        """
+        names, source_sha1 = self._offline_record_locate_fields(record)
+        if not names and not source_sha1:
+            return "defer"
+        verdict = self._offline_backfill_verdict(
+            record, directory_snapshot, purpose="audit"
+        )
+        if verdict == "ready":
+            return "confirmed"
+        if verdict == "defer":
+            return "defer"
+        # 目录内未命中且全盘检索能力不可用：证据不足，暂不降级。
+        if not self._full_pan_search_available():
+            return "defer"
+        return "missing"
+
+    @staticmethod
+    def _offline_fake_success_reason() -> str:
+        return (
+            "存量核对反向回查：成功记录在网盘目录与全盘检索均未找到实体"
+            "文件，确认属于提交成功但实际未落盘的假成功，已降级为失败"
+        )
+
+    def _downgrade_fake_success_record(
+            self, record: Dict[str, Any], reason: str
+    ) -> None:
+        """把确认的假成功记录降级为失败并记录 INFO（T4 存量核对升级）。"""
+        record["status"] = "失败"
+        record["failure_reason"] = reason
+        record.pop("finalize_key", None)
+        record["offline_downgraded_at"] = time.time()
+        logger.info(
+            f"存量核对反向回查降级："
+            f"{self._offline_backfill_record_label(record)}，原因：{reason}"
+        )
+
     def reconcile_offline_history_backfill(self, limit: int = 10) -> int:
-        """存量核对自动回填：失败/空/处理中历史反查网盘，就绪即回填成功。
+        """存量核对：失败/空/处理中回填成功 + 离线假成功反向回查降级。
 
-        每轮同步调用：对状态为失败、空值或处理中的历史记录，按文件名或
-        源哈希在中转目录与最终目录反查文件是否已在 115 网盘就绪；就绪则
-        回填为成功并补发通知。目录接口瞬态错误时本轮跳过该条，不误判。
+        每轮同步调用两类核对：
+        1) 回填：状态为失败、空值或处理中的历史记录，按文件名或源哈希在
+           中转与最终目录反查，未命中再走全盘检索兜底；就绪则回填为成功
+           并补发通知。
+        2) 假成功反查（v1.5.4 T4）：离线（磁力/ED2K）成功记录做反向回查，
+           目录与全盘检索均未找到实体文件时确认属于"提交即成功"的假成功，
+           降级为失败并修正订阅进度 note，防止永久污染；检索能力不可用或
+           接口瞬态错误一律 defer，绝不在证据不足时误降级。
         每轮最多核对 limit 条，近期核对过的键做内存缓存避免全量列目录。
-
-        v1.5.4 T4 预留挂钩点：ED2K/Magnet 假成功（提交即成功、网盘无文件）
-        的反查降级不在本轮；此处已具备按文件名/source_sha1 反查网盘的能力，
-        T4 只需把"下载中 + pending 已消失 + 文件不存在"的记录纳入
-        _OFFLINE_BACKFILL_STATUSES 并降级为失败/等待。
         """
         if (
                 not self._get_data
@@ -1416,6 +1538,7 @@ class HistoryService(OwnerDelegator):
         max_checks = max(1, int(limit or 10))
         repaired_records: List[Dict[str, Any]] = []
         notification_details: List[Dict[str, Any]] = []
+        downgraded_records: List[Dict[str, Any]] = []
         with self._offline_pending_lock:
             pending = self._get_data(self._OFFLINE_PENDING_KEY) or {}
             history = self._get_data("history") or []
@@ -1426,7 +1549,21 @@ class HistoryService(OwnerDelegator):
                 if not isinstance(record, dict):
                     continue
                 status = str(record.get("status") or "").strip()
-                if status and status not in self._OFFLINE_BACKFILL_STATUSES:
+                # 存量回填候选：失败/空/处理中；假成功反查候选：成功但
+                # 属离线提交高危项（v1.5.4 T4）。
+                is_backfill = (
+                    not status or status in self._OFFLINE_BACKFILL_STATUSES
+                )
+                audit_check = getattr(
+                    self, "_offline_success_audit_candidate", None
+                )
+                is_audit = (
+                    bool(audit_check(record)) if callable(audit_check) else False
+                )
+                if not is_backfill and not is_audit:
+                    continue
+                if is_audit and record.get("offline_verified_at"):
+                    # 已确认无误的成功记录不再重复全盘检索。
                     continue
                 finalize_key = str(record.get("finalize_key") or "")
                 if finalize_key and finalize_key in pending:
@@ -1441,9 +1578,18 @@ class HistoryService(OwnerDelegator):
                     continue
                 checked += 1
                 try:
-                    verdict = self._offline_backfill_verdict(
-                        record, directory_snapshot
+                    reverse = getattr(
+                        self, "_offline_success_reverse_verdict", None
                     )
+                    if is_audit and callable(reverse):
+                        verdict = reverse(record, directory_snapshot)
+                    elif is_audit:
+                        # 反查能力不可用：证据不足，绝不误降级。
+                        verdict = "defer"
+                    else:
+                        verdict = self._offline_backfill_verdict(
+                            record, directory_snapshot
+                        )
                 except Exception as error:
                     logger.debug(
                         f"存量核对反查网盘文件异常，本轮跳过："
@@ -1451,9 +1597,22 @@ class HistoryService(OwnerDelegator):
                     )
                     verdict = "defer"
                 if verdict == "defer":
-                    # 瞬态接口错误：本轮跳过且不记缓存，下一轮重试。
+                    # 瞬态接口错误/证据不足：本轮跳过且不记缓存，下一轮重试。
                     continue
                 checked_at[key] = now
+                if is_audit:
+                    downgrade = getattr(
+                        self, "_downgrade_fake_success_record", None
+                    )
+                    reason_fn = getattr(
+                        self, "_offline_fake_success_reason", None
+                    )
+                    if verdict == "confirmed":
+                        record["offline_verified_at"] = now
+                    elif callable(downgrade) and callable(reason_fn):
+                        downgrade(record, reason_fn())
+                        downgraded_records.append(record)
+                    continue
                 if verdict != "ready":
                     continue
                 record["status"] = "成功"
@@ -1463,8 +1622,34 @@ class HistoryService(OwnerDelegator):
                 notification_details.append(
                     self._offline_backfill_notification_detail(record)
                 )
-            if repaired_records:
+            if repaired_records or downgraded_records:
                 self._save_data("history", history)
+        if downgraded_records:
+            # 修正订阅进度 note：把被降级集数从 note 移除并重算缺集数，
+            # 防止假成功永久污染订阅进度（v1.5.4 T4）。
+            refresh_notes = getattr(
+                self, "_refresh_deleted_subscribe_notes", None
+            )
+            if callable(refresh_notes):
+                try:
+                    refresh_notes(
+                        downgraded_records,
+                        history,
+                        log_context="假成功反向回查降级后",
+                    )
+                except Exception as error:
+                    logger.warning(f"假成功降级后修正订阅进度失败：{error}")
+            labels = "、".join(
+                self._offline_backfill_record_label(item)
+                for item in downgraded_records
+            )
+            logger.info(
+                f"存量核对反向回查降级：{len(downgraded_records)} 条假成功记录"
+                f"在网盘目录与全盘检索均未找到实体文件，已降级为失败"
+                f"并修正订阅进度：{labels}"
+            )
+            if self._history_changed:
+                self._history_changed()
         if repaired_records:
             labels = "、".join(
                 self._offline_backfill_record_label(item)
@@ -2477,8 +2662,9 @@ class HistoryService(OwnerDelegator):
             self,
             deleted_records: List[Dict[str, Any]],
             remaining_history: List[Dict[str, Any]],
+            log_context: str = "历史删除后",
     ) -> None:
-        """按删除后的剩余历史修正电视剧订阅 note 和缺集数。"""
+        """按失效记录后的剩余历史修正电视剧订阅 note 和缺集数。"""
         targets: Dict[Tuple[str, int], Set[int]] = {}
         for record in deleted_records:
             tmdb_id = str(record.get("tmdb_id") or "").strip()
@@ -2519,7 +2705,7 @@ class HistoryService(OwnerDelegator):
                     {"note": new_note, "lack_episode": lack},
                 )
                 logger.info(
-                    f"历史删除后更新订阅 note：{subscribe.name}，"
+                    f"{log_context}更新订阅 note：{subscribe.name}，"
                     f"{sorted(current_note)} -> {new_note}"
                 )
 

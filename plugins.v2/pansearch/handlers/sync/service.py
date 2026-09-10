@@ -2320,51 +2320,66 @@ class SyncHandler:
             logger.warning(f"115 离线任务列表刷新失败，将继续使用缓存：{error}")
         no_handle = not bool(real_task_id)
         now = time.time()
+        metadata = resource.get("magnet_metadata") or {}
+        file_name = str(
+            metadata.get("display_name")
+            or resource.get("title") or info_hash
+        )
+        target_episode_list = sorted({
+            int(value) for value in (target_episodes or []) if int(value) > 0
+        })
+        # 手动提交（/cloud_link）与订阅后处理两条通道统一走
+        # _build_pending_record，补齐 info_hash/source_sha1/staging_dir/
+        # staging_name/file_size/success_episodes 等定位字段，避免因缺字段
+        # 导致后续轮次无法拾取或无法定位（v1.5.4 T4）。resource/
+        # target_episodes/upgrade_baseline 等磁力专属键经 current 原样保留。
+        source_sha1 = str(
+            resource.get("source_sha1") or metadata.get("sha1") or ""
+        ).upper()
+        record = self._build_pending_record(
+            current={
+                "resource": dict(resource),
+                "target_episodes": target_episode_list,
+                "upgrade_baseline": dict(upgrade_baseline or {}),
+                "history_ready": True,
+            },
+            pending_key=pending_key,
+            task_type="magnet",
+            info_hash=info_hash,
+            source_hash=source_sha1,
+            share_url=share_url,
+            cloud_dir=staging_dir,
+            file_name=file_name,
+            staging_dir=staging_dir,
+            staging_name=file_name,
+            file_size=self._resource_size_bytes(
+                resource.get("size") or metadata.get("size")
+            ),
+            now=now,
+            mediainfo=mediainfo,
+            subscribe_id=subscribe_id,
+            success_episodes=target_episode_list,
+            notification_episodes=target_episode_list,
+            season=season,
+            sub_key=sub_key,
+            upgrade=upgrade,
+            upgrade_mode=upgrade_mode,
+            transient_target=transient_target,
+            target_subscribe=(
+                self._serialize_pending_target_subscribe(subscribe)
+                if transient_target else None
+            ),
+        )
+        record.update({
+            "task_id": real_task_id,
+            "no_handle": no_handle,
+            # 手动磁力通道的历史记录已在提交后立即写入，登记即可激活，
+            # 无需等待 _activate_persisted_pending_tasks 再延迟一轮。
+            "history_ready": True,
+        })
         with self._offline_pending_lock:
             pending = self._get_data(self._OFFLINE_PENDING_KEY) or {}
-            pending[pending_key] = {
-                "pending_key": pending_key,
-                "task_type": "magnet",
-                "task_id": real_task_id,
-                "no_handle": no_handle,
-                "share_url": share_url,
-                "cloud_dir": staging_dir,
-                "file_name": str(
-                    (resource.get("magnet_metadata") or {}).get("display_name")
-                    or resource.get("title") or info_hash
-                ),
-                "created_at": now,
-                "next_check_at": now + self._OFFLINE_CHECK_DELAYS[0],
-                "check_index": 0,
-                "history_ready": True,
-                "mediainfo": self._serialize_mediainfo(mediainfo),
-                "subscribe_id": subscribe_id,
-                "season": season,
-                "target_episodes": sorted({
-                    int(value) for value in (target_episodes or []) if int(value) > 0
-                }),
-                "resource": dict(resource),
-                "sub_key": str(sub_key or ""),
-                "upgrade": bool(upgrade),
-                "upgrade_mode": str(upgrade_mode or self._upgrade_mode),
-                "upgrade_baseline": dict(upgrade_baseline or {}),
-                "transient_target": bool(transient_target),
-                "target_subscribe": {
-                    "name": str(getattr(subscribe, "name", "") or ""),
-                    "year": getattr(subscribe, "year", None),
-                    "type": str(getattr(subscribe, "type", "") or ""),
-                    "tmdbid": tmdb_id_of(subscribe),
-                    "doubanid": legacy_media_ids(subscribe).get("doubanid"),
-                    "season": getattr(subscribe, "season", None),
-                    "start_episode": getattr(subscribe, "start_episode", None),
-                    "total_episode": getattr(subscribe, "total_episode", None),
-                    "media_category": getattr(subscribe, "media_category", None),
-                    "episode_group": getattr(subscribe, "episode_group", None),
-                    "filter_groups": getattr(subscribe, "filter_groups", None),
-                    "best_version": bool(getattr(subscribe, "best_version", False)),
-                    "_manual_upgrade": bool(getattr(subscribe, "_manual_upgrade", False)),
-                } if transient_target else {},
-            }
+            pending[pending_key] = record
             self._save_offline_pending(pending)
             pending_count = len(pending)
         self._notify_offline_pending_changed(pending_count)
@@ -2558,6 +2573,12 @@ class SyncHandler:
             "task_type": task_type,
             "task_id": pending_task_id,
             "info_hash": pending_info_hash,
+            # 统一 pending schema 的状态字段：供 offline_pending_tasks.status
+            # 列与前端展示使用；旧记录缺键时按任务类型兜底（v1.5.4 T4）。
+            "status": str(
+                current.get("status")
+                or ("下载中" if task_type in ("magnet", "ed2k") else "处理中")
+            ),
             "no_handle": no_handle,
             "source_sha1": source_hash,
             "share_url": share_url,
