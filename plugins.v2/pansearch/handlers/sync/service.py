@@ -161,7 +161,11 @@ class SyncHandler:
     # 离线下载超时兜底默认（分钟）；实际以实例配置
     # offline_download_timeout_minutes 覆盖（见 __init__）。
     _OFFLINE_TIMEOUT = 120 * 60
-    _FILE_FINALIZE_TIMEOUT = 30 * 60
+    # 文件终审窗口兜底默认；与离线下载超时同源同配置，不再独立硬编码 30 分钟，
+    # 避免网盘已保存但定位稍慢的文件被第二处窗口误判为失败。
+    _FILE_FINALIZE_TIMEOUT = 120 * 60
+    # 终审判死前全盘兜底检索的递归深度。
+    _FULL_PAN_SEARCH_DEPTH = 6
     _OFFLINE_MONITOR_LEASE_SECONDS = 15 * 60
     _MEDIA_RECOGNITION_CACHE_LIMIT = 256
     _PLATFORM_ROOT_CACHE_LIMIT = 256
@@ -273,7 +277,8 @@ class SyncHandler:
         :param pansou_client: PanSou 客户端（用于链接有效性检测，渠道无关）
         :param pansou_check_enabled: 是否启用 PanSou 链接有效性检测层
         :param max_transfer_links: 单订阅单轮累计成功转存链接数上限，0 表示不限制
-        :param offline_download_timeout_minutes: 离线下载超时分钟数，慢下载不再按 30 分钟误判
+        :param offline_download_timeout_minutes: 离线下载超时分钟数，慢下载不再按 30 分钟误判；
+            同时作为文件终审窗口（_FILE_FINALIZE_TIMEOUT）时长
         """
         self._cloud_drive = cloud_drive
         self._cross_transfer_enabled = bool(cross_transfer_enabled)
@@ -359,6 +364,8 @@ class SyncHandler:
             timeout_minutes = 120
         # 实例配置覆盖类常量；旧调用方/测试未传参时回落 120 分钟。
         self._OFFLINE_TIMEOUT = timeout_minutes * 60
+        # 终审窗口与离线下载超时同源，避免第二处 30 分钟硬编码误判。
+        self._FILE_FINALIZE_TIMEOUT = timeout_minutes * 60
         self._self_heal_interval = self_heal_interval
         self._enable_cloud_upgrade = enable_cloud_upgrade
         self._enable_pt_upgrade = bool(enable_pt_upgrade)
@@ -1772,6 +1779,141 @@ class SyncHandler:
                 "reason": failure_reasons.get(file_id, ""),
             })
         return results
+
+    @staticmethod
+    def _cloud_entry_name(entry: Any) -> str:
+        """兼容 CloudFile 与提供方原始 dict 两种条目形态读取文件名。"""
+        value = getattr(entry, "name", None)
+        if not value and isinstance(entry, Mapping):
+            value = entry.get("name") or entry.get("n") or entry.get("file_name")
+        return str(value or "").strip()
+
+    @staticmethod
+    def _cloud_entry_sha1(entry: Any) -> str:
+        value = getattr(entry, "sha1", None)
+        if not value and isinstance(entry, Mapping):
+            value = entry.get("sha1") or entry.get("sha")
+        return str(value or "").strip().upper()
+
+    @staticmethod
+    def _cloud_entry_is_directory(entry: Any) -> bool:
+        value = getattr(entry, "is_directory", None)
+        if value is None and isinstance(entry, Mapping):
+            value = entry.get("is_dir")
+        return bool(value)
+
+    @staticmethod
+    def _cloud_entry_dir(entry: Any, fallback: str) -> str:
+        """递归结果携带的父目录（p115 递归条目写入 _cloud_dir），缺失时回落检索根。"""
+        native = getattr(entry, "native", None)
+        if not isinstance(native, Mapping) and isinstance(entry, Mapping):
+            native = entry
+        if isinstance(native, Mapping):
+            value = str(native.get("_cloud_dir") or "").strip()
+            if value:
+                return value.rstrip("/") or "/"
+        return str(fallback or "/").rstrip("/") or "/"
+
+    def _full_pan_search_roots(self, item: Mapping[str, Any]) -> List[str]:
+        """全盘兜底检索根：中转目录 -> 目标目录 -> 转存暂存根 -> 媒体库根 -> 网盘根。
+
+        已被更浅的根递归覆盖的子目录不重复检索；出现网盘根后不再追加。
+        旧 pending 载荷缺 staging_dir/cloud_dir 等键时按空值跳过。
+        """
+        candidates = (
+            item.get("staging_dir"),
+            item.get("cloud_dir"),
+            getattr(self, "_cloud_transfer_path", ""),
+            getattr(self, "_CLOUD_MEDIA_ROOT", ""),
+            "/",
+        )
+        roots: List[str] = []
+        for candidate in candidates:
+            normalized = str(candidate or "").strip().rstrip("/") or "/"
+            if "/" in roots:
+                break
+            if normalized in roots:
+                continue
+            if any(
+                    normalized == root or normalized.startswith(f"{root}/")
+                    for root in roots if root != "/"
+            ):
+                continue
+            roots.append(normalized)
+        return roots
+
+    def _full_pan_locate_file(
+            self,
+            item: Mapping[str, Any],
+            file_name: str = "",
+            source_sha1: str = "",
+    ) -> Optional[Tuple[Any, str]]:
+        """网盘全盘兜底检索：优先 source_sha1，其次文件名。
+
+        返回 (文件条目, 所在目录)，未命中返回 None。当前网盘不具备递归
+        查询能力（其他提供方无 list_files_recursive）时优雅降级返回
+        None，调用方沿用原判定，绝不影响转存主流程。
+        sha1 已知时只接受 sha1 相同或 sha1 未知的同名文件，避免把同名
+        的其他版本误认成目标文件。
+        """
+        query = getattr(self, "_cloud_query", None)
+        recursive = getattr(query, "list_files_recursive", None) if query else None
+        if not callable(recursive):
+            logger.debug("当前网盘不支持递归检索，跳过终审全盘兜底")
+            return None
+        target_sha1 = str(
+            source_sha1 or item.get("source_sha1") or ""
+        ).strip().upper()
+        names = {
+            str(value).strip().lower()
+            for value in (
+                file_name,
+                item.get("file_name"),
+                item.get("staging_name"),
+            )
+            if str(value or "").strip()
+        }
+        if not target_sha1 and not names:
+            return None
+        name_hit: Optional[Tuple[Any, str]] = None
+        for root in self._full_pan_search_roots(item):
+            try:
+                entries = recursive(root, max_depth=self._FULL_PAN_SEARCH_DEPTH)
+            except TypeError:
+                # 不接受 max_depth 的提供方按其默认深度检索。
+                try:
+                    entries = recursive(root)
+                except Exception as error:
+                    logger.debug(f"全盘检索目录失败：{root}，{error}")
+                    continue
+            except Exception as error:
+                logger.debug(f"全盘检索目录失败：{root}，{error}")
+                continue
+            for entry in entries or []:
+                if self._cloud_entry_is_directory(entry):
+                    continue
+                entry_name = self._cloud_entry_name(entry)
+                if not entry_name:
+                    continue
+                entry_sha1 = self._cloud_entry_sha1(entry)
+                entry_dir = self._cloud_entry_dir(entry, root)
+                if target_sha1 and entry_sha1 == target_sha1:
+                    logger.info(
+                        f"全盘检索按 sha1 命中文件：{entry_dir}/{entry_name}"
+                    )
+                    return entry, entry_dir
+                if (
+                        name_hit is None
+                        and entry_name.lower() in names
+                        and not (target_sha1 and entry_sha1)
+                ):
+                    name_hit = (entry, entry_dir)
+        if name_hit:
+            logger.info(
+                f"全盘检索按文件名命中文件："
+                f"{name_hit[1]}/{self._cloud_entry_name(name_hit[0])}"
+            )
+        return name_hit
 
     def _generate_strm(
             self,

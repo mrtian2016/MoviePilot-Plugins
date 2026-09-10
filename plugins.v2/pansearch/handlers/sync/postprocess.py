@@ -243,6 +243,98 @@ class PostprocessService(OwnerDelegator):
         minutes = max(1, int(self._OFFLINE_TIMEOUT // 60))
         return f"{prefix}离线下载超过 {minutes} 分钟未完成，已退出"
 
+    def _finalize_timeout_minutes(self) -> int:
+        """终审窗口分钟数，跟随 offline_download_timeout_minutes 配置。"""
+        try:
+            return max(1, int(self._FILE_FINALIZE_TIMEOUT // 60))
+        except (TypeError, ValueError):
+            return 120
+
+    def _finalize_locate_fail_reason(self, rounds: int = 0) -> str:
+        """定位失败文案：动态分钟数 + 全盘兜底轮数，不再硬编码 30 分钟。"""
+        suffix = f"，连续 {rounds} 轮全盘检索均未找到" if rounds else ""
+        return (
+            f"网盘文件已保存但 {self._finalize_timeout_minutes()} 分钟内"
+            f"仍无法在转存路径定位{suffix}"
+        )
+
+    def _finalize_strm_fail_reason(self) -> str:
+        """STRM 生成失败文案：动态分钟数，不再硬编码 30 分钟。"""
+        return (
+            f"文件已下载但 {self._finalize_timeout_minutes()} 分钟内"
+            f"仍无法生成 STRM"
+        )
+
+    def _finalize_full_pan_verdict(
+            self,
+            item: Dict[str, Any],
+            file_name: str,
+            now: float,
+    ) -> Tuple[str, Any]:
+        """终审窗口到期、常规目录定位失败时的全盘兜底判定。
+
+        判死前先按 source_sha1、其次按文件名做网盘全盘检索：
+        - ("located", (文件, 所在目录, 是否已就位))：全盘命中。文件已在
+          目标目录（或当前网盘无移动能力）时按已就位继续 STRM 流程，
+          后者把实际路径写入 pending 载荷 actual_path；否则交回原有
+          重命名/移动流程整理到目标目录。
+        - ("retry", "")：全盘未命中但零进展轮数未达上限，暂缓判定，
+          保留 pending 下轮复查（基线为 download_completed_at）。
+        - ("fail", 原因)：连续 _OFFLINE_ZERO_GROWTH_ROUNDS 轮全盘检索
+          仍未找到文件，才下失败终态。
+        旧 pending 载荷缺 finalize_zero_progress_rounds 等键时按 0 轮处理。
+        """
+        located = self._full_pan_locate_file(item, file_name=file_name)
+        final_dir = str(item.get("cloud_dir") or "/").rstrip("/") or "/"
+        if located:
+            item["finalize_zero_progress_rounds"] = 0
+            target_file, actual_dir = located
+            actual_dir = str(actual_dir or "/").rstrip("/") or "/"
+            actual_name = (
+                    self._cloud_entry_name(target_file) or str(file_name or "")
+            )
+            if actual_dir == final_dir and actual_name == file_name:
+                item["moved_at"] = item.get("moved_at") or now
+                logger.info(
+                    f"全盘检索确认文件已在目标目录，继续后处理："
+                    f"{final_dir}/{actual_name}"
+                )
+                return "located", (target_file, final_dir, True)
+            if getattr(self, "_cloud_mutations", None):
+                item["staging_dir"] = actual_dir
+                item["staging_name"] = actual_name
+                logger.info(
+                    f"全盘检索在 {actual_dir} 找到 {actual_name}，"
+                    f"继续整理到 {final_dir}/{file_name}"
+                )
+                return "located", (target_file, actual_dir, False)
+            actual_path = f"{actual_dir.rstrip('/')}/{actual_name}"
+            item["actual_path"] = actual_path
+            item["cloud_dir"] = actual_dir
+            item["staging_dir"] = actual_dir
+            item["staging_name"] = actual_name
+            item["moved_at"] = now
+            logger.info(
+                f"当前网盘不支持移动文件，按全盘检索到的实际路径记录成功："
+                f"{actual_path}"
+            )
+            return "located", (target_file, actual_dir, True)
+        rounds = int(item.get("finalize_zero_progress_rounds") or 0) + 1
+        item["finalize_zero_progress_rounds"] = rounds
+        item.setdefault(
+            "finalize_timeout_baseline",
+            float(item.get("download_completed_at") or now),
+        )
+        if rounds >= self._OFFLINE_ZERO_GROWTH_ROUNDS:
+            reason = self._finalize_locate_fail_reason(rounds)
+            logger.warning(f"{reason}：{file_name}")
+            return "fail", reason
+        logger.info(
+            f"终审窗口已到但全盘检索未找到文件（第 {rounds} 轮零进展），"
+            f"继续等待：{file_name}"
+        )
+        return "retry", ""
+
     def _offline_slow_download_verdict(
             self,
             item: Dict[str, Any],
@@ -1358,15 +1450,34 @@ class PostprocessService(OwnerDelegator):
                                 )
                 if not target_file:
                     ready_at = float(item.get("download_completed_at") or created_at)
-                    if now - ready_at >= self._FILE_FINALIZE_TIMEOUT:
-                        reason = "网盘文件已保存但30分钟内仍无法在转存路径定位"
-                        self._mark_offline_history_status(pending_key, "失败", reason)
+                    if now - ready_at < self._FILE_FINALIZE_TIMEOUT:
+                        self._schedule_finalize_retry(item, now)
+                        continue
+                    # 终审窗口到期不得直接判死：先做网盘全盘兜底检索
+                    # （sha1 优先、文件名次之），未命中也走零进展暂缓。
+                    locate_verdict, locate_payload = (
+                        self._finalize_full_pan_verdict(item, file_name, now)
+                    )
+                    if locate_verdict == "retry":
+                        self._schedule_finalize_retry(item, now)
+                        continue
+                    if locate_verdict != "located":
+                        reason = (
+                                str(locate_payload or "")
+                                or self._finalize_locate_fail_reason()
+                        )
+                        self._mark_offline_history_status(
+                            pending_key, "失败", reason
+                        )
                         pending.pop(pending_key, None)
                         record_round_failure(file_name, reason)
                         failed += 1
-                    else:
-                        self._schedule_finalize_retry(item, now)
-                    continue
+                        continue
+                    target_file, staging_dir, already_moved = locate_payload
+                    staging_name = (
+                            str(item.get("staging_name") or "").strip()
+                            or staging_name
+                    )
 
                 if item.get("upgrade") and str(
                         item.get("upgrade_mode") or self._upgrade_mode
@@ -1497,7 +1608,7 @@ class PostprocessService(OwnerDelegator):
 
                 ready_at = float(item.get("download_completed_at") or created_at)
                 if now - ready_at >= self._FILE_FINALIZE_TIMEOUT:
-                    reason = "文件已下载但30分钟内仍无法生成 STRM"
+                    reason = self._finalize_strm_fail_reason()
                     self._mark_offline_history_status(pending_key, "失败", reason)
                     pending.pop(pending_key, None)
                     record_round_failure(file_name, reason)
