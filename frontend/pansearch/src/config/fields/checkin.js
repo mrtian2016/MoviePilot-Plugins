@@ -1,0 +1,195 @@
+import {enabled} from "./helpers.js";
+
+export function createCheckinSection() {
+  return {
+    value: "checkin",
+    title: "签到服务",
+    icon: "mdi-calendar-check-outline",
+    groups: [
+      {
+        tab: "checkin",
+        title: "签到详情",
+        icon: "mdi-history",
+        hint: "集中显示全部签到渠道最近 7 天状态，并在对应渠道行内执行立即签到。",
+        fields: [
+          {
+            key: "checkin_timeline",
+            type: "checkin-timeline",
+            providers: [
+              {
+                key: "hdhive",
+                name: "HDHive",
+                icon: "mdi-hexagon-multiple-outline",
+                enabledKey: "hdhive_checkin_enabled",
+                modeKey: "hdhive_checkin_mode",
+                credentialKeys: ["hdhive_username", "hdhive_password"],
+              },
+              {
+                key: "dian115",
+                name: "Dian115",
+                icon: "mdi-cloud-search",
+                enabledKey: "dian115_checkin_enabled",
+                modeKey: "dian115_checkin_mode",
+                credentialKeys: ["dian115_email", "dian115_password"],
+              },
+              {
+                key: "juying",
+                name: "聚影",
+                icon: "mdi-movie-check-outline",
+                enabledKey: "juying_checkin_enabled",
+                modeKey: "juying_checkin_mode",
+                credentialKeys: ["juying_username", "juying_password"],
+              },
+              {
+                key: "p115",
+                name: "115 网盘",
+                icon: "mdi-cloud-outline",
+                enabledKey: "p115_checkin_enabled",
+                modeKey: "p115_checkin_mode",
+                credentialKeys: ["cookies"],
+              },
+              {
+                key: "quark",
+                name: "夸克网盘",
+                icon: "mdi-cloud-outline",
+                enabledKey: "quark_checkin_enabled",
+                modeKey: "quark_checkin_mode",
+                credentialKeys: ["quark_checkin_url"],
+              },
+            ],
+            cols: 12,
+          },
+        ],
+      },
+      {
+        tab: "checkin",
+        title: "统一调度",
+        icon: "mdi-calendar-clock-outline",
+        hint: "所有渠道共用一个任务；每天首次全量签到，后续只重试当天失败的渠道。",
+        fields: [
+          {
+            key: "checkin_auto_retry",
+            label: "自动重试",
+            type: "switch",
+            hint: "自动签到失败后，在当天 9-23 点内随机重试失败渠道。",
+            cols: 12,
+          },
+          {
+            key: "checkin_cron",
+            label: "签到执行周期",
+            type: "cron",
+            hint: "默认每天 08:00 执行；修改后统一应用到全部签到渠道。",
+            placeholder: "0 8 * * *",
+            cols: 6,
+          },
+          {
+            key: "checkin_retry_count",
+            label: "自动重试次数",
+            type: "number",
+            min: 1,
+            max: 10,
+            suffix: "次",
+            hint: "默认重试 2 次，已签到成功的渠道不会再次执行。",
+            cols: 6,
+            show: enabled("checkin_auto_retry"),
+          },
+        ],
+      },
+      {
+        tab: "checkin",
+        title: "HDHive 签到",
+        icon: "mdi-hexagon-multiple-outline",
+        fields: [
+          {key: "hdhive_checkin_enabled", label: "启用每日签到", type: "switch", cols: 4},
+          {
+            key: "hdhive_checkin_mode",
+            label: "签到模式",
+            type: "select",
+            items: [
+              {title: "普通签到", value: "normal"},
+              {title: "赌狗签到", value: "gambler"},
+            ],
+            hint: "HDHive 赌狗模式会将签到奖励乘以 -1～3 的随机倍数，最坏扣除 3 积分。",
+            cols: 8,
+            show: enabled("hdhive_checkin_enabled"),
+          },
+        ],
+      },
+      {
+        tab: "checkin",
+        title: "Dian115 签到与娱乐",
+        icon: "mdi-cloud-search",
+        fields: [
+          {key: "dian115_checkin_enabled", label: "启用每日签到", type: "switch", cols: 4},
+          {
+            key: "dian115_checkin_mode",
+            label: "签到模式",
+            type: "select",
+            items: [
+              {title: "普通签到", value: "normal"},
+              {title: "运气签到", value: "lucky"},
+            ],
+            hint: "运气签到可能获得 3～10 倍奖励，也有 21% 概率扣除 1 倍普通签到积分。",
+            cols: 8,
+            show: enabled("dian115_checkin_enabled"),
+          },
+          {
+            key: "dian115_lottery_enabled",
+            label: "启用幸运转盘",
+            type: "switch",
+            hint: "每次消耗 5 积分",
+            cols: 4,
+            show: enabled("dian115_checkin_enabled"),
+          },
+          {
+            key: "dian115_lottery_count",
+            label: "每日转盘目标次数",
+            type: "number",
+            min: 1,
+            max: 20,
+            suffix: "次",
+            hint: "最多 20 次；会先读取站点当天已用次数，只执行尚缺的次数。",
+            cols: 8,
+            show: (config) => Boolean(config.dian115_checkin_enabled && config.dian115_lottery_enabled),
+          },
+        ],
+      },
+      {
+        tab: "checkin",
+        title: "聚影签到",
+        icon: "mdi-movie-check-outline",
+        fields: [{key: "juying_checkin_enabled", label: "启用每日签到", type: "switch", cols: 12}],
+      },
+      {
+        tab: "checkin",
+        title: "115 网盘签到",
+        icon: "mdi-cloud-outline",
+        fields: [
+          {
+            key: "p115_checkin_enabled",
+            label: "启用每日签到并领取枫叶",
+            type: "switch",
+            hint: "复用已配置的 115 Cookie；每天先检查签到状态，未签到时自动领取枫叶。",
+            cols: 12,
+          },
+        ],
+      },
+      {
+        tab: "checkin",
+        title: "夸克网盘签到",
+        icon: "mdi-cloud-outline",
+        fields: [
+          {key: "quark_checkin_enabled", label: "启用每日签到并领取空间奖励", type: "switch", cols: 4},
+          {
+            key: "quark_checkin_url",
+            label: "夸克签到 URL",
+            type: "password",
+            hint: "填写抓包得到的完整 growth/reward URL，需包含 kps、sign、vcode；参数失效后需重新抓取。",
+            cols: 8,
+            show: enabled("quark_checkin_enabled"),
+          },
+        ],
+      },
+    ],
+  }
+}

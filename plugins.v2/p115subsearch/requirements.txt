@@ -1,0 +1,4 @@
+p115client>=0.0.9.6,<0.0.10
+playwright-stealth==2.0.2
+# 癫影（Dian115）浏览器证明签名（ES256）所需；MoviePilot 镜像通常已自带
+cryptography>=42.0.0

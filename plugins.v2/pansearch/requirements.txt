@@ -1,0 +1,7 @@
+p115client>=0.0.9.6.5.1
+p123client>=0.0.9.3.1
+torf>=4.3.1
+curl_cffi>=0.15.0
+oss2>=2.18.0
+numpy>=2.0.0
+Pillow>=11.0.0

@@ -1,0 +1,270 @@
+# PanSearch v1.5.0 Development Context
+
+## Project
+MoviePilot v2 plugin PanSearch (netdisk search assistant), Chinese-language
+plugin, repo root /tmp/mp115-fork. Plugin code: plugins.v2/pansearch/.
+Read-only reference sibling: plugins.v2/p115subsearch/ (DO NOT modify it).
+Frontend source: frontend/pansearch/ (vite + module federation, build output
+goes DIRECTLY into plugins.v2/pansearch/dist/assets per vite.config.js).
+Current version 1.4.0 (HEAD 8aee773). Target: 1.5.0 with 4 features.
+
+## Hard rules
+1. Do not touch plugins.v2/p115subsearch/ at all (read-only reference).
+2. Do not change plugins.v2/pansearch/ directory layout.
+3. Do not rewire search channel registration logic (F2 only adds a
+   validation step before transfer).
+4. Frontend: only add necessary config fields, no UI redesign.
+5. py_compile every changed .py file immediately after edit.
+6. Commit small and per-feature with clear Chinese messages.
+7. Config keys must reuse existing backend key names exactly
+   (organize_after_transfer, max_transfer_links, pansou_check_enabled etc).
+8. Never break MoviePilot runtime: handlers use OwnerDelegator pattern,
+   attributes come from owner plugin instance via delegation.
+9. dist/ must stay in git (.gitignore already allows pansearch dist).
+
+## Architecture map (verified 2026-09-09)
+- plugins.v2/pansearch/__init__.py (1984 lines): plugin class PanSearch(_PluginBase),
+  plugin_version at line 118, config reading in init (~line 1100-1140),
+  PanSouClient() init at line 1329, OnlineDocumentClient init at line 1389,
+  SyncHandler() init at line 1778 (passes organize_after_transfer).
+- plugins.v2/pansearch/core/config.py: default config dict (pansou_ keys around
+  line 167-188, transfer keys around line 261-282).
+- plugins.v2/pansearch/handlers/sync/movie.py (668 lines): MovieSyncProcessor,
+  candidate loop at line ~290 (for resource_index, resource in
+  enumerate(candidate_resources)), movie_transferred flag stops after first
+  success (movie = stop after success, keep this behavior).
+- plugins.v2/pansearch/handlers/sync/television.py (803 lines): TV loop over
+  resource_batches (source_index, candidate_resources, is_cross_batch),
+  per-resource inner loop at line ~350, transfer results processed at ~657-760,
+  transferred_count incremented at line 695, success_episodes list at 285.
+- plugins.v2/pansearch/handlers/sync/resources.py: _validated_resource_files at
+  line 592 (share validation + listing, used by movie/tv/upgrade).
+- plugins.v2/pansearch/handlers/sync/service.py: SyncHandler class, init kwargs
+  at line 180+, uses _COMPONENT_TYPES + resolve_component for delegation.
+- plugins.v2/pansearch/search/pansou/client.py (433 lines): PanSouClient with
+  request_search, health, token auth, gated_request. NO check_links yet.
+- plugins.v2/pansearch/search/online_docs/client.py (496 lines):
+  OnlineDocumentClient.read(url) -> parse_online_document (real network fetch,
+  no cache). service.py OnlineDocumentSearchService.search() calls
+  self._client.read(document_url) per document per search.
+- plugins.v2/pansearch/handlers/search/service.py: SearchHandler (owns
+  _pansou_client, _search_registry).
+- Frontend config fields: frontend/pansearch/src/config/fields/transfer.js
+  already has organize_after_transfer switch field (line 50) -
+  bundled from upstream 1.3.5. New fields go here or in fields/search/pansou.js.
+
+## Reference implementation (p115subsearch v1.7.3, read-only!)
+- plugins.v2/p115subsearch/clients/pansou.py line 331 check_links(items):
+  POST {base}/api/check/links, payload {"items": [{"disk_type": "115",
+  "url":..., "password":...}]}, returns results list with state
+  ok|bad|locked|unsupported|uncertain; empty list on ANY failure (degrade).
+- plugins.v2/p115subsearch/handlers/sync.py line 85 _build_pansou_check_map:
+  batch check -> url-to-state map; None on failure = fallback to original
+  validation. _pansou_check_single for uncovered links. Consumer pattern:
+  state == "bad" -> skip link; other states -> original flow. locked is NOT
+  dead (password-less links return locked).
+- plugins.v2/p115subsearch/handlers/sync.py movie branch: per-channel
+  _build_pansou_check_map call, max_transfer_links guard both at channel
+  loop top and per-link inner loop.
+- max_transfer_links semantics: per-subscribe cumulative successful transfer
+  link count limit; when reached, stop searching more channels and links.
+  Default 5.
+- KDocs disk cache pattern: plugins.v2/p115subsearch/clients/kdocs.py
+  _cache_path/_load_cache/_save_cache (line 300-355): JSON file
+  {saved_at: ts, data: ...} in plugin data dir, TTL 6h
+  (cache_ttl_hours * 3600), atomic tmp+replace write, in-memory memo with
+  loaded_at, on expired/missing/failure re-fetch.
+
+## Known pitfalls
+- PanSou check_links endpoint sometimes 403/429/TLS-reset: client MUST return
+  empty list on failure so caller degrades to original validation. Never let
+  the check layer break transfers.
+- Payload key is items (NOT urls); disk_type values: 115, quark etc.
+- Movie branch currently: success on first transferred link stops the loop
+  (movie_transferred flag). With max_transfer_links this stays: movies cap
+  naturally; TV keeps transferring across channels until missing episodes
+  filled or cap reached.
+- Frontend build needs node 22 (host has v22.22.1). packageManager pnpm 10.25.0
+  but npm install works too. If GitHub registry times out use npmmirror mirror.
+- Build output overwrites plugins.v2/pansearch/dist/assets/ (vite
+  emptyOutDir). After build, verify remoteEntry.js exists.
+- Chinese text in JS/CSS files is normal; ensure UTF-8 no BOM.
+
+## v1.5.1 bugfix batch (context added 2026-09-09, HEAD dafed56 = v1.5.0)
+Goal: fix offline task status tracking (false failures + invisible 115
+download progress). Four tasks T1-T4, behavior spec in the round prompts.
+
+### Root evidence (verified by requirements owner on production container)
+- Table offline_pending_tasks in /config/plugins/PanSearch/pansearch.db:
+  all 7 pending rows carry task_id = "subscribe:910" (subscribe-level
+  fallback built in _build_pending_record, handlers/sync/service.py
+  ~2297-2313), not the real 115 clouddownload info_hash.
+- Postprocess matching (handlers/sync/postprocess.py): magnet branch
+  ~line 896 and ed2k branch ~944 do task_map.get(task_id.upper()); a
+  fallback id never matches -> the item sits until _OFFLINE_TIMEOUT
+  (service.py line 161, 30 min) and is then wrongly marked failed.
+  Logs prove the file was actually on the 115 drive.
+- Blacklist granularity bug: postprocess.py calls
+  _add_offline_blacklist(item.get("share_url") or item.get("task_id"),
+  reason) at ~900/909/939/951/960/975/984. If share_url is empty the
+  fallback can be "subscribe:<id>" which blacklists the WHOLE subscribe
+  for 1 day. subscribe-*/media-* keys must never enter the blacklist.
+- API flakiness: clouddownload task list intermittently HTTP 502 ->
+  drive/p115/offline.py get_offline_tasks (~84-105) falls back to a
+  10-min stale cache (refresh_ok=False is tracked and exposed by
+  get_offline_task_list_snapshot; postprocess reads offline_tasks_valid
+  at ~552 but the timeout-fail branches 907/957/981 ignore it).
+  Directory listing intermittently HTTP 405 -> p115 files.py
+  _iter_directory (p115client iterdir) fails, list_files_by_cid_checked
+  ~747 returns (False, []), so the sha1/dir reverse-lookup fallback is
+  also dead.
+- Deterministic dead links (errno 4100018, logged in drive/p115/share.py
+  ~735 "link expired") get re-discovered and re-fail every round,
+  inflating failure counts. history records: 53 success / 43 failed /
+  7 processing, and the 7 processing rows carry an EMPTY status string
+  -> frontend has nothing to show.
+
+### Key code landmarks (v1.5.0 HEAD)
+- drive/p115/offline.py: add_offline_download (~291, returns bool, calls
+  add_offline_downloads_batch), batch (~305-448) already parses
+  data.result info_hash per url and injects synthetic tasks into the
+  cache; _format_offline_task (~30-64) yields id/percent/state;
+  _format_offline_status (~140) maps state to Chinese text.
+- handlers/sync/service.py: _queue_magnet_package ~2090 calls
+  add_offline_download and only uses the bool; _add_offline_blacklist
+  ~1902; _OFFLINE_TIMEOUT line 161; _pending_identity ~2201 derives
+  info_hash from the url via _offline_hash.
+- handlers/sync/postprocess.py: monitor_offline_strm_tasks ~444; share
+  branch already locates files by staging name and source_sha1 via
+  directory_snapshot (~579) -- reusable for a "file already exists"
+  final verdict before declaring timeout failure.
+- handlers/sync/history.py: _mark_offline_history_status_batch ~1388
+  can already flip records to success and collect platform records.
+- tests/test_wk1_logic.py: ast-extraction unit test harness usable for
+  new logic tests without importing app.*.
+
+### v1.5.1 progress (updated 2026-09-09, batch complete, version 1.5.1)
+- Committed: 19c9df0 (T1 real info_hash handle + progress snapshot),
+  0e933ef (T2 timeout file-exists verdict + blacklist guard),
+  df17f8e (T3 502/405 backoff retry + defer on refresh_ok=False),
+  fddefbb (T2 regression: ready verdict falls through to finalize same
+  round, livelock fix), plus T4 (history backfill reconcile + dead-link
+  blacklist) and 1.5.1 version wrap-up. Unit tests:
+  tests/test_v151_offline_logic.py, 49 cases, all OK via
+  `python3 -m unittest tests.test_v151_offline_logic` run from
+  plugins.v2/pansearch/ (wk1 suite 13 cases also OK).
+- T4-A: history.py reconcile_offline_history_backfill (statuses
+  失败/处理中/empty, skip active pending, staging+final dir name/sha1
+  verdict, defer on transient listing errors without caching, 10/round
+  cap, 1h in-memory recheck cache) called at end of every
+  core/services/sync.py _do_sync round; backfills to 成功, reuses
+  _record_platform_transfer_histories + _send_finalized_batch.
+- T4-B: share.py _do_transfer records deterministic dead links (errno
+  4100018 / 过期 / expired) keyed by share_url, consumed via
+  consume_dead_link_failure; service.py _blacklist_dead_link_share wired
+  into _transfer_file (both branches) and _transfer_episode_batch;
+  resources.py _validate_resource_url blacklists expired shares;
+  movie/television/upgrade loops check _is_offline_blacklisted
+  unconditionally (share links included, dedicated log line).
+- v1.5.1 released: plugin_version 1.5.1, package.v2.json entry version
+  + Chinese history note. dist/ untouched.
+
+### v1.5.1 guardrails
+- Do NOT regress v1.5.0 F1-F4 (pansou prefilter, max_transfer_links,
+  organize switch, kdocs cache). Do NOT touch plugins.v2/p115subsearch/.
+- Frontend only if strictly required to surface progress fields; then
+  rebuild dist in the same round (node 22 available).
+- Version bump last: package.v2.json + __init__.py plugin_version =
+  1.5.1 plus a Chinese v1.5.1 history entry in __init__.py.
+- py_compile each edited file immediately; commit per task with Chinese
+  messages. Do not commit scratch files.
+
+### v1.5.3 briefing (2026-09-10, baseline 77cc867, T1-T4)
+- Prod incident: 30min offline window misjudged slow 115 downloads as
+  failed; 4200045 "already exists" recorded as failure; failures lack reason.
+- Test cmd: /vol4/1000/hermes/workspaces/crawler-tools/venv/bin/python
+  -m pytest plugins.v2/pansearch/tests/ -q  (73 passed baseline at 77cc867)
+- HARD: no commit, no push, no version bump. Developer commits per T.
+- HARD: never add abstract members to core/cloud.py shared contracts;
+  tests/test_v152_provider_contract.py must stay green. Do not touch
+  drive/p123, drive/guangya, plugins.v2/p115subsearch/.
+- py_compile every edited file immediately.
+- T1 core: handlers/sync/service.py L161 _OFFLINE_TIMEOUT = 30*60;
+  handlers/sync/postprocess.py timeout branches ~L1011/1084/1135/1850
+  (reason strings hardcode "30 分钟"); v1.5.1 already has
+  _offline_timeout_file_verdict, _offline_timeout_should_defer,
+  _persist_offline_progress, _schedule_finalize_retry, real info_hash
+  via get_offline_tasks. DB: core/database/models.py
+  OfflinePendingTask pending_key PK + JSON payload; manager.py init_db
+  create_all + alembic update_db; alembic/versions is EMPTY -> if you
+  need a new column, prefer payload-JSON state + PRAGMA-checked ALTER
+  with silent degradation for old DBs. Config panel fields live in
+  core/api/registration.py get_form (L59); defaults in core/config.py
+  transfer section (~L261-282); new key offline_download_timeout_minutes
+  default 120, backward compatible.
+- T2 core: drive/p115/share.py 4200045 paths L479/504/582/644/649/768-770
+  mostly handled; find where single-file channel still maps "exists" to
+  failure; handlers/sync/service.py _transfer_episode_items L1421 /
+  _transfer_episode_batch L1479 = success source. "exists" must count as
+  transferred success, INFO log, no failure record.
+- T3 core: core/history.py + all callers writing "失败"/failed status;
+  payload JSON gains fail_reason (missing key on old rows must not crash);
+  every failure path logs >=1 WARNING with subscribe/episode/reason;
+  batch timeouts emit one summary WARNING.
+- T4 core: v1.5.1 reconcile_offline_history_backfill in
+  handlers/sync/history.py (~L1248); ready-verdict log at L1215 already
+  INFO; audit the rest of the backfill chain, promote DEBUG to INFO with
+  record id + evidence (dir/filename); add a test asserting INFO output.
+
+
+### v1.5.4 briefing (2026-09-10, baseline 1e9714e, T1-T4)
+- Prod incidents (DB id149-153 + logs + code triple-confirmed):
+  1) 飞到我心上 E20 id151: finalize window judged dead though 115 already
+     saved the file; service.py L164 _FILE_FINALIZE_TIMEOUT = 30*60 is a
+     SECOND hardcoded window independent of v1.5.3 offline timeout;
+     postprocess.py L1362/L1500 reason strings hardcode "30分钟".
+  2) 完美世界 E286 id149: dian115 ED2K unlocked 19:34:02, 39s later history
+     wrote 成功 + subscribe progress 286 + transfer-done notification, but
+     file never landed (ED2K cannot finish in 39s). Submit-success was
+     treated as download-success. Must go through pending like magnet path
+     (_queue_magnet_package + _append_magnet_pending_history write 下载中).
+  3) 奥德赛 id153: manual cloud_link magnet submit 19:37:33 registered
+     offline_pending 19:38:14, next_check_at lapsed and it was never picked
+     up again; suspect schema mismatch between manual channel and subscribe
+     channel (missing fields -> every round skip).
+  4) 交锋 E10 id150: share-transfer fast-fail wrote 失败 with NO
+     failure_reason and NO WARNING though same round 4 files transferred;
+     v1.5.3 T3 has missed failure-write sites.
+- T1: wire _FILE_FINALIZE_TIMEOUT to offline_download_timeout_minutes
+  config (same source as _OFFLINE_TIMEOUT); dynamic minutes in reason text
+  (use minutes var not "30分钟"); before judging dead do full-pan search
+  fallback by source_sha1 then file name (p115 search/recursion): found ->
+  success (move into cloud_dir if movable, else record actual_path in
+  payload + INFO); not found -> defer per v1.5.3 T1 zero-progress-3-round
+  mechanism, not immediate fail.
+- T2: ED2K/magnet submit success must only write 下载中 + register
+  offline_pending (info_hash, cloud_dir, file_name, source_sha1,
+  subscribe_id); 成功 only after postprocess proves file landed. Find the
+  dian115 ED2K branch that writes success directly and unify.
+- T3: grep every write of 失败 into history (share fast-fail branch),
+  all must carry failure_reason + WARNING; if same episode succeeded via
+  another source in same round, success wins - no contradicting record.
+- T4: unify pending schema of manual-submit channel vs subscribe channel;
+  expired next_check_at pending must be re-checked every round; backfill
+  search extends to full-pan fallback (reuse T1 fn); reverse-audit T2
+  fake-success records: if file missing -> downgrade to 失败/等待 and fix
+  subscribe progress note.
+- HARD red lines: never add abstract members to core/cloud.py;
+  tests/test_v152_provider_contract.py must stay green (run inside
+  container: docker exec -i moviepilot-v2 /opt/venv/bin/python -m pytest
+  ...; host venv missing requests/app is env noise); no DB schema change -
+  new fields go into payload JSON with missing-key tolerance; do not touch
+  drive/p123, drive/guangya, plugins.v2/p115subsearch/.
+- Test cmd: /vol4/1000/hermes/workspaces/crawler-tools/venv/bin/python
+  -m pytest plugins.v2/pansearch/tests/ -q (127 passed baseline at
+  1e9714e); contract test via docker exec container python.
+- HARD: no commit, no push, no version bump inside claude rounds.
+  Developer commits per T. py_compile every edited file immediately.
+- Failure write sites inventory (postprocess.py): L1055/1079/1118/1165/
+  1206/1228/1269/1363/1501/1650/1668/1726 via _mark_offline_history_status;
+  history.py L1699/1714 batch; movie.py L615.
