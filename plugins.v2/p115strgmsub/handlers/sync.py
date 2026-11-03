@@ -21,6 +21,55 @@ from .search import SearchHandler
 from .subscribe import SubscribeHandler
 
 
+def _recognize_kwargs(subscribe) -> Dict[str, Any]:
+    """识别参数：MP v2 订阅有 tmdbid/doubanid 沿用旧参数，MP v3 只有 media_source/media_id"""
+    if hasattr(subscribe, "tmdbid"):
+        return {"tmdbid": subscribe.tmdbid, "doubanid": subscribe.doubanid}
+    return {"media_source": subscribe.media_source, "media_id": subscribe.media_id}
+
+
+def _sub_key(subscribe, suffix: str) -> str:
+    """订阅积分唯一标识：TMDB 来源保持 tmdb_{id} 旧格式，其他来源用 media_source+media_id，否则回退订阅名"""
+    tmdbid = getattr(subscribe, "tmdbid", None)
+    if tmdbid:
+        return f"tmdb_{tmdbid}_{suffix}"
+    source = getattr(subscribe, "media_source", None)
+    media_id = getattr(subscribe, "media_id", None)
+    if source and media_id:
+        source = getattr(source, "value", source)
+        return f"tmdb_{media_id}_{suffix}" if source == "themoviedb" else f"{source}_{media_id}_{suffix}"
+    return f"{subscribe.name}_{suffix}"
+
+
+def _history_media_kwargs(mediainfo) -> Dict[str, Any]:
+    """下载历史媒体标识：v2/v3 都有 media_source/media_id，仅 v2 模型还有 tmdbid 等旧列"""
+    from app.db.models.downloadhistory import DownloadHistory
+    source = getattr(mediainfo, "media_source", None) or getattr(mediainfo, "source", None)
+    kwargs: Dict[str, Any] = {"media_source": getattr(source, "value", source),
+                              "media_id": getattr(mediainfo, "media_id", None)}
+    if hasattr(DownloadHistory, "tmdbid"):
+        kwargs.update(tmdbid=mediainfo.tmdb_id, imdbid=mediainfo.imdb_id,
+                      tvdbid=mediainfo.tvdb_id, doubanid=mediainfo.douban_id)
+    return kwargs
+
+
+def _no_exists_key(no_exists: Optional[dict], mediainfo) -> Any:
+    """缺集字典的键：新版 MP（v3 及新版 v2）为 build_media_key(media_source, media_id)，旧版为 tmdb_id/douban_id"""
+    if not no_exists:
+        return None
+    candidates = []
+    for mod in ("app.schemas.media", "app.utils.media"):
+        try:
+            build_media_key = getattr(__import__(mod, fromlist=["build_media_key"]), "build_media_key")
+        except Exception:
+            continue
+        source = getattr(mediainfo, "media_source", None) or getattr(mediainfo, "source", None)
+        candidates.append(build_media_key(source, getattr(mediainfo, "media_id", None)))
+        break
+    candidates += [mediainfo.tmdb_id, mediainfo.douban_id]
+    return next((k for k in candidates if k and k in no_exists), None)
+
+
 class SyncHandler:
     """同步处理器"""
 
@@ -91,7 +140,7 @@ class SyncHandler:
             logger.info(f"处理电影订阅：{subscribe.name} ({subscribe.year})")
 
             # 加载该订阅的历史积分花费（用 tmdb_id 作为唯一标识）
-            sub_key = f"tmdb_{subscribe.tmdbid}_movie" if subscribe.tmdbid else f"{subscribe.name}_movie"
+            sub_key = _sub_key(subscribe, "movie")
             if hasattr(self._search_handler, 'reset_sub_spent_points'):
                 self._search_handler.reset_sub_spent_points(sub_key)
 
@@ -127,8 +176,7 @@ class SyncHandler:
             mediainfo: MediaInfo = self._chain.recognize_media(
                 meta=meta,
                 mtype=MediaType.MOVIE,
-                tmdbid=subscribe.tmdbid,
-                doubanid=subscribe.doubanid,
+                **_recognize_kwargs(subscribe),
                 cache=True
             )
             if not mediainfo:
@@ -268,10 +316,7 @@ class SyncHandler:
                                     type=mediainfo.type.value,
                                     title=mediainfo.title,
                                     year=mediainfo.year,
-                                    tmdbid=mediainfo.tmdb_id,
-                                    imdbid=mediainfo.imdb_id,
-                                    tvdbid=mediainfo.tvdb_id,
-                                    doubanid=mediainfo.douban_id,
+                                    **_history_media_kwargs(mediainfo),
                                     image=mediainfo.get_poster_image(),
                                     downloader="115网盘",
                                     download_hash=matched_file.get("id"),
@@ -330,7 +375,7 @@ class SyncHandler:
             logger.info(f"处理订阅：{subscribe.name} (S{subscribe.season or 1})")
 
             # 加载该订阅的历史积分花费（用 tmdb_id + 季数作为唯一标识）
-            sub_key = f"tmdb_{subscribe.tmdbid}_S{subscribe.season or 1}" if subscribe.tmdbid else f"{subscribe.name}_S{subscribe.season or 1}"
+            sub_key = _sub_key(subscribe, f"S{subscribe.season or 1}")
             if hasattr(self._search_handler, 'reset_sub_spent_points'):
                 self._search_handler.reset_sub_spent_points(sub_key)
 
@@ -349,8 +394,7 @@ class SyncHandler:
             mediainfo: MediaInfo = self._chain.recognize_media(
                 meta=meta,
                 mtype=MediaType.TV,
-                tmdbid=subscribe.tmdbid,
-                doubanid=subscribe.doubanid,
+                **_recognize_kwargs(subscribe),
                 cache=True
             )
 
@@ -393,7 +437,7 @@ class SyncHandler:
             # 获取缺失的集数列表
             season = meta.begin_season or 1
             missing_episodes = []
-            mediakey = mediainfo.tmdb_id or mediainfo.douban_id
+            mediakey = _no_exists_key(no_exists, mediainfo)
 
             if no_exists and mediakey:
                 season_info = no_exists.get(mediakey, {})
@@ -736,10 +780,7 @@ class SyncHandler:
                                     type=mediainfo.type.value,
                                     title=mediainfo.title,
                                     year=mediainfo.year,
-                                    tmdbid=mediainfo.tmdb_id,
-                                    imdbid=mediainfo.imdb_id,
-                                    tvdbid=mediainfo.tvdb_id,
-                                    doubanid=mediainfo.douban_id,
+                                    **_history_media_kwargs(mediainfo),
                                     seasons=f"S{season:02d}",
                                     episodes=episodes_str,
                                     image=mediainfo.get_poster_image(),
